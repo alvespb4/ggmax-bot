@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GGMAX BOT</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #080810; color: #e2e8f0; font-family: 'Courier New', monospace; min-height: 100vh; }
+
+  header {
+    background: #0a0a14; border-bottom: 1px solid #1e293b;
+    padding: 16px 32px; display: flex; align-items: center; gap: 12px;
+  }
+  .logo { font-size: 20px; font-weight: 900; letter-spacing: 1px; }
+  .logo span { color: #00ff94; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #00ff94;
+    box-shadow: 0 0 8px #00ff94; margin-left: auto; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .container { max-width: 900px; margin: 40px auto; padding: 0 24px; }
+
+  .card {
+    background: #0d0d18; border: 1px solid #1e293b;
+    border-radius: 12px; padding: 28px; margin-bottom: 20px;
+  }
+  .card-title {
+    font-size: 11px; letter-spacing: 3px; color: #475569;
+    margin-bottom: 20px; text-transform: uppercase;
+  }
+
+  label { font-size: 11px; color: #64748b; letter-spacing: 1px; display: block; margin-bottom: 8px; }
+  input, select, textarea {
+    width: 100%; background: #111120; border: 1px solid #1e293b;
+    border-radius: 8px; padding: 12px 14px; color: #e2e8f0;
+    font-size: 13px; font-family: monospace; outline: none; margin-bottom: 16px;
+    transition: border-color 0.2s;
+  }
+  input:focus, select:focus, textarea:focus { border-color: #00ff9466; }
+  select option { background: #111120; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+  .btn {
+    padding: 14px 28px; border-radius: 8px; border: none;
+    font-family: monospace; font-weight: 900; font-size: 13px;
+    letter-spacing: 2px; cursor: pointer; transition: all 0.2s;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #00ff94, #00cc77);
+    color: #080810; width: 100%;
+  }
+  .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+  .btn-primary:disabled { background: #1e293b; color: #475569; cursor: not-allowed; transform: none; }
+
+  .progress-bar {
+    background: #111120; border-radius: 99px; height: 8px;
+    overflow: hidden; margin: 12px 0;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, #00ff94, #38bdf8);
+    border-radius: 99px; transition: width 0.5s ease;
+    width: 0%;
+  }
+
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+  .stat { background: #111120; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; text-align: center; }
+  .stat-value { font-size: 24px; font-weight: 900; }
+  .stat-label { font-size: 10px; color: #475569; margin-top: 4px; }
+
+  .log-box {
+    background: #080810; border: 1px solid #0f172a; border-radius: 8px;
+    padding: 14px; height: 240px; overflow-y: auto; font-size: 11px; line-height: 1.8;
+  }
+  .log-box::-webkit-scrollbar { width: 4px; }
+  .log-box::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+
+  .log-ok { color: #00ff94; }
+  .log-err { color: #f87171; }
+  .log-info { color: #60a5fa; }
+  .log-wait { color: #94a3b8; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-family: monospace;
+  }
+  .badge-ok { background: #0f2a1e; color: #00ff94; border: 1px solid #00ff9444; }
+  .badge-err { background: #2a1515; color: #f87171; border: 1px solid #f8717144; }
+  .badge-wait { background: #1e293b; color: #94a3b8; border: 1px solid #33415544; }
+  .badge-prog { background: #1a2535; color: #60a5fa; border: 1px solid #60a5fa44; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { text-align: left; color: #334155; font-size: 10px; letter-spacing: 1px; padding: 8px 10px; border-bottom: 1px solid #0f172a; }
+  td { padding: 10px; border-bottom: 1px solid #0a0a14; color: #94a3b8; }
+  td:first-child { color: #334155; }
+  .empty { text-align: center; color: #1e293b; padding: 40px; }
+
+  .alert { padding: 14px 18px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; display: none; }
+  .alert-ok { background: #0f2a1e; border: 1px solid #00ff9444; color: #00ff94; }
+  .alert-err { background: #2a1515; border: 1px solid #f8717144; color: #f87171; }
+</style>
+</head>
+<body>
+
+<header>
+  <div style="width:28px;height:28px;background:linear-gradient(135deg,#00ff94,#38bdf8);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;">⚡</div>
+  <div class="logo">GGMAX<span>BOT</span></div>
+  <div class="status-dot"></div>
+</header>
+
+<div class="container">
+
+  <!-- STATS -->
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value" id="stat-total" style="color:#00ff94">0</div>
+      <div class="stat-label">CONCLUÍDAS</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="stat-prog" style="color:#60a5fa">0</div>
+      <div class="stat-label">EM PROGRESSO</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="stat-err" style="color:#f87171">0</div>
+      <div class="stat-label">ERROS</div>
+    </div>
+  </div>
+
+  <!-- FORMULÁRIO -->
+  <div class="card">
+    <div class="card-title">▸ Nova Campanha</div>
+
+    <div id="alert-ok" class="alert alert-ok">✓ Campanha iniciada! Acompanhe o progresso abaixo.</div>
+    <div id="alert-err" class="alert alert-err"></div>
+
+    <label>LINK DO ANÚNCIO GGMAX</label>
+    <input type="text" id="url" placeholder="https://ggmax.com.br/anuncio/..." />
+
+    <label>NOME DO PRODUTO (para gerar perguntas relevantes)</label>
+    <input type="text" id="titulo" placeholder="Ex: Prime Video 30 dias acesso completo" />
+
+    <div class="grid3">
+      <div>
+        <label>QUANTIDADE DE CONTAS</label>
+        <input type="number" id="quantidade" value="5" min="1" max="200" />
+      </div>
+      <div>
+        <label>TOM DAS PERGUNTAS</label>
+        <select id="tom">
+          <option value="variado">🎲 Variado</option>
+          <option value="curioso">🤔 Curioso</option>
+          <option value="interessado">😊 Interessado</option>
+          <option value="direto">⚡ Direto</option>
+        </select>
+      </div>
+      <div>
+        <label>DELAY ENTRE CONTAS</label>
+        <select id="delay">
+          <option value="normal">Normal (5-10s)</option>
+          <option value="rapido">Rápido (3-5s)</option>
+          <option value="lento">Lento (10-20s)</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="btn-iniciar" onclick="iniciarCampanha()">
+      ▶ INICIAR CAMPANHA
+    </button>
+  </div>
+
+  <!-- LOG + PROGRESSO -->
+  <div class="card" id="card-progresso" style="display:none">
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>▸ PROGRESSO EM TEMPO REAL</span>
+      <span id="progresso-texto" style="color:#00ff94">0 / 0</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="log-box" id="log-box">
+      <span class="log-wait">Aguardando início...</span>
+    </div>
+  </div>
+
+  <!-- TABELA DE CONTAS -->
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>▸ CONTAS CRIADAS</span>
+      <button onclick="exportarCSV()" style="background:#111120;border:1px solid #1e293b;color:#94a3b8;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-family:monospace;">
+        ↓ EXPORTAR CSV
+      </button>
+    </div>
+    <div id="tabela-container">
+      <div class="empty">Nenhuma conta criada ainda.</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const RAILWAY_URL = "https://ggmax-bot-production.up.railway.app";
+const API_KEY = "5e03b0370d5f42d8a6e011517930bfe4";
+
+let contas = [];
+let rodando = false;
+let totalCampanha = 0;
+
+function log(msg, tipo = "info") {
+  const box = document.getElementById("log-box");
+  const linha = document.createElement("div");
+  linha.className = `log-${tipo}`;
+  const hora = new Date().toLocaleTimeString("pt-BR");
+  linha.textContent = `[${hora}] ${msg}`;
+  box.appendChild(linha);
+  box.scrollTop = box.scrollHeight;
+}
+
+function atualizarStats() {
+  document.getElementById("stat-total").textContent = contas.filter(c => c.status === "concluido").length;
+  document.getElementById("stat-prog").textContent = contas.filter(c => !["concluido","erro","aguardando"].includes(c.status)).length;
+  document.getElementById("stat-err").textContent = contas.filter(c => c.status === "erro").length;
+}
+
+function atualizarTabela() {
+  const container = document.getElementById("tabela-container");
+  if (contas.length === 0) {
+    container.innerHTML = '<div class="empty">Nenhuma conta criada ainda.</div>';
+    return;
+  }
+  const badgeMap = {
+    aguardando: '<span class="badge badge-wait">Aguardando</span>',
+    cadastrando: '<span class="badge badge-prog">Cadastrando...</span>',
+    verificando: '<span class="badge badge-prog">Verificando...</span>',
+    logando: '<span class="badge badge-prog">Logando...</span>',
+    perguntando: '<span class="badge badge-prog">Perguntando...</span>',
+    concluido: '<span class="badge badge-ok">✓ Concluído</span>',
+    erro: '<span class="badge badge-err">✗ Erro</span>',
+  };
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>USUÁRIO</th><th>E-MAIL</th><th>PERGUNTA</th><th>STATUS</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${contas.map(c => `
+          <tr>
+            <td>${c.numero}</td>
+            <td>${c.usuario || "—"}</td>
+            <td style="color:#475569">${c.email || "—"}</td>
+            <td style="font-style:italic;color:#64748b">${c.pergunta ? '"' + c.pergunta + '"' : "—"}</td>
+            <td>${badgeMap[c.status] || c.status}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>`;
+}
+
+function atualizarProgresso() {
+  const concluidos = contas.filter(c => c.status === "concluido").length;
+  const pct = totalCampanha > 0 ? (concluidos / totalCampanha * 100) : 0;
+  document.getElementById("progress-fill").style.width = pct + "%";
+  document.getElementById("progresso-texto").textContent = `${concluidos} / ${totalCampanha}`;
+}
+
+async function iniciarCampanha() {
+  const url = document.getElementById("url").value.trim();
+  const titulo = document.getElementById("titulo").value.trim();
+  const quantidade = parseInt(document.getElementById("quantidade").value);
+  const tom = document.getElementById("tom").value;
+
+  if (!url) { alert("Informe o link do anúncio!"); return; }
+  if (!titulo) { alert("Informe o nome do produto!"); return; }
+
+  document.getElementById("alert-ok").style.display = "none";
+  document.getElementById("alert-err").style.display = "none";
+  document.getElementById("btn-iniciar").disabled = true;
+  document.getElementById("btn-iniciar").textContent = "INICIANDO...";
+  document.getElementById("card-progresso").style.display = "block";
+  document.getElementById("log-box").innerHTML = "";
+
+  totalCampanha = quantidade;
+  contas = Array.from({length: quantidade}, (_, i) => ({
+    numero: i + 1, usuario: "", email: "", pergunta: "", status: "aguardando"
+  }));
+  atualizarTabela();
+  atualizarStats();
+
+  log(`Iniciando campanha com ${quantidade} contas...`, "info");
+  log(`Alvo: ${url}`, "wait");
+
+  try {
+    const resp = await fetch(`${RAILWAY_URL}/iniciar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: API_KEY,
+        campanha_id: "painel-" + Date.now(),
+        url_anuncio: url,
+        titulo: titulo,
+        quantidade: quantidade,
+        tom: tom
+      })
+    });
+
+    const data = await resp.json();
+
+    if (resp.ok) {
+      document.getElementById("alert-ok").style.display = "block";
+      document.getElementById("btn-iniciar").textContent = "RODANDO...";
+      log("✓ Servidor confirmou início da campanha!", "ok");
+      log("Acompanhe o progresso sendo atualizado abaixo...", "wait");
+      iniciarPolling();
+    } else {
+      throw new Error(data.erro || "Erro desconhecido");
+    }
+  } catch (e) {
+    const errEl = document.getElementById("alert-err");
+    errEl.textContent = "✗ Erro: " + e.message;
+    errEl.style.display = "block";
+    log("✗ Erro ao conectar: " + e.message, "err");
+    document.getElementById("btn-iniciar").disabled = false;
+    document.getElementById("btn-iniciar").textContent = "▶ INICIAR CAMPANHA";
+  }
+}
+
+// Polling para atualizar contas via Railway
+async function iniciarPolling() {
+  const interval = setInterval(async () => {
+    try {
+      const resp = await fetch(`${RAILWAY_URL}/status`);
+      const data = await resp.json();
+
+      if (data.contas) {
+        contas = data.contas;
+        atualizarTabela();
+        atualizarStats();
+        atualizarProgresso();
+
+        data.contas.forEach(c => {
+          if (c.status === "concluido" && c.pergunta) {
+            log(`✓ [${c.numero}] ${c.usuario} — "${c.pergunta}"`, "ok");
+          } else if (c.status === "erro") {
+            log(`✗ [${c.numero}] Erro: ${c.erro}`, "err");
+          }
+        });
+
+        if (data.campanha_status === "concluida") {
+          clearInterval(interval);
+          document.getElementById("btn-iniciar").disabled = false;
+          document.getElementById("btn-iniciar").textContent = "▶ INICIAR CAMPANHA";
+          log("✓ CAMPANHA CONCLUÍDA COM SUCESSO!", "ok");
+        }
+      }
+    } catch(e) {}
+  }, 5000);
+}
+
+function exportarCSV() {
+  if (contas.length === 0) { alert("Nenhuma conta para exportar!"); return; }
+  const linhas = [["#","Usuário","E-mail","Pergunta","Status"]];
+  contas.forEach(c => linhas.push([c.numero, c.usuario, c.email, c.pergunta, c.status]));
+  const csv = linhas.map(l => l.join(",")).join("\n");
+  const blob = new Blob([csv], {type: "text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "ggmax_campanha.csv";
+  a.click();
+}
+</script>
+</body>
+</html>
