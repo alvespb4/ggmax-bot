@@ -1,8 +1,8 @@
 """
-GGMAX BOT - Servidor Railway
+GGMAX BOT - Servidor Railway Completo
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import asyncio
 import random
@@ -11,11 +11,12 @@ import time
 import re
 import requests
 import threading
+import os
 from playwright.async_api import async_playwright
 from groq import Groq
 
 app = Flask(__name__)
-CORS(app)  # Permite chamadas do Base44
+CORS(app)
 
 GROQ_API_KEY    = "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"
 BASE44_ENDPOINT = "https://preview-sandbox--69ab80547aecb9090ac003a1.base44.app/functions/webhook"
@@ -27,8 +28,23 @@ DELAY_MAX       = 8.0
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# Estado global das campanhas
+campanhas_status = {}
+
+
+def registrar_conta_local(campanha_id, numero, usuario, email, pergunta, status, erro=""):
+    if campanha_id not in campanhas_status:
+        campanhas_status[campanha_id] = {"contas": [], "campanha_status": "ativa"}
+    contas = campanhas_status[campanha_id]["contas"]
+    existente = next((c for c in contas if c["numero"] == numero), None)
+    if existente:
+        existente.update({"usuario": usuario, "email": email, "pergunta": pergunta, "status": status, "erro": erro})
+    else:
+        contas.append({"numero": numero, "usuario": usuario, "email": email, "pergunta": pergunta, "status": status, "erro": erro})
+
 
 def registrar_conta(campanha_id, numero, usuario, email, pergunta, status, erro=""):
+    registrar_conta_local(campanha_id, numero, usuario, email, pergunta, status, erro)
     try:
         requests.post(BASE44_ENDPOINT, json={
             "api_key": BASE44_API_KEY,
@@ -45,6 +61,8 @@ def registrar_conta(campanha_id, numero, usuario, email, pergunta, status, erro=
 
 
 def atualizar_campanha(campanha_id, status):
+    if campanha_id in campanhas_status:
+        campanhas_status[campanha_id]["campanha_status"] = status
     try:
         requests.post(BASE44_ENDPOINT, json={
             "api_key": BASE44_API_KEY,
@@ -278,46 +296,47 @@ def rodar_campanha(campanha_id, url_anuncio, titulo, quantidade, tom):
     asyncio.run(executar_campanha_async(campanha_id, url_anuncio, titulo, quantidade, tom))
 
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
-    return jsonify({"status": "GGMAX BOT online"})
+    return send_from_directory(".", "index.html")
 
 
 @app.route("/iniciar", methods=["POST", "OPTIONS"])
 def iniciar():
     if request.method == "OPTIONS":
         return jsonify({}), 200
-
     data = request.json or {}
-
     if data.get("api_key") != BASE44_API_KEY:
         return jsonify({"erro": "API key inválida"}), 401
-
     campanha_id = data.get("campanha_id")
     url_anuncio = data.get("url_anuncio")
     titulo      = data.get("titulo", "Produto")
     quantidade  = int(data.get("quantidade", 5))
     tom         = data.get("tom", "variado")
-
     if not campanha_id or not url_anuncio:
         return jsonify({"erro": "campanha_id e url_anuncio são obrigatórios"}), 400
-
+    campanhas_status[campanha_id] = {"contas": [], "campanha_status": "ativa"}
     thread = threading.Thread(
         target=rodar_campanha,
         args=(campanha_id, url_anuncio, titulo, quantidade, tom)
     )
     thread.daemon = True
     thread.start()
+    return jsonify({"status": "iniciado", "campanha_id": campanha_id, "mensagem": "Campanha iniciada!"})
 
-    return jsonify({
-        "status": "iniciado",
-        "campanha_id": campanha_id,
-        "quantidade": quantidade,
-        "mensagem": "Campanha iniciada! Acompanhe o progresso no painel."
-    })
+
+@app.route("/status", methods=["GET"])
+def status():
+    campanha_id = request.args.get("campanha_id")
+    if campanha_id and campanha_id in campanhas_status:
+        return jsonify(campanhas_status[campanha_id])
+    # Retorna última campanha se não especificar ID
+    if campanhas_status:
+        ultima = list(campanhas_status.values())[-1]
+        return jsonify(ultima)
+    return jsonify({"contas": [], "campanha_status": "aguardando"})
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
