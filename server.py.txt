@@ -1,10 +1,9 @@
 """
 GGMAX BOT - Servidor Railway
-=============================
-Recebe comandos do Base44 e executa a automação.
 """
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import asyncio
 import random
 import string
@@ -16,10 +15,8 @@ from playwright.async_api import async_playwright
 from groq import Groq
 
 app = Flask(__name__)
+CORS(app)  # Permite chamadas do Base44
 
-# ──────────────────────────────────────────────
-# CONFIGURAÇÕES
-# ──────────────────────────────────────────────
 GROQ_API_KEY    = "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"
 BASE44_ENDPOINT = "https://preview-sandbox--69ab80547aecb9090ac003a1.base44.app/functions/webhook"
 BASE44_API_KEY  = "5e03b0370d5f42d8a6e011517930bfe4"
@@ -31,20 +28,17 @@ DELAY_MAX       = 8.0
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 
-# ──────────────────────────────────────────────
-# INTEGRAÇÃO BASE44
-# ──────────────────────────────────────────────
 def registrar_conta(campanha_id, numero, usuario, email, pergunta, status, erro=""):
     try:
         requests.post(BASE44_ENDPOINT, json={
-            "api_key":     BASE44_API_KEY,
+            "api_key": BASE44_API_KEY,
             "campanha_id": campanha_id,
-            "numero":      numero,
-            "usuario":     usuario,
-            "email":       email,
-            "pergunta":    pergunta,
-            "status":      status,
-            "erro":        erro,
+            "numero": numero,
+            "usuario": usuario,
+            "email": email,
+            "pergunta": pergunta,
+            "status": status,
+            "erro": erro,
         }, timeout=10)
     except Exception as e:
         print(f"Erro Base44: {e}")
@@ -53,32 +47,31 @@ def registrar_conta(campanha_id, numero, usuario, email, pergunta, status, erro=
 def atualizar_campanha(campanha_id, status):
     try:
         requests.post(BASE44_ENDPOINT, json={
-            "api_key":     BASE44_API_KEY,
+            "api_key": BASE44_API_KEY,
             "campanha_id": campanha_id,
-            "tipo":        "atualizar_campanha",
-            "status":      status,
+            "tipo": "atualizar_campanha",
+            "status": status,
         }, timeout=10)
     except Exception as e:
         print(f"Erro Base44: {e}")
 
 
-# ──────────────────────────────────────────────
-# UTILITÁRIOS
-# ──────────────────────────────────────────────
 def gerar_usuario():
     prefixos = ["gamer", "user", "player", "br", "pro", "top", "neo", "max"]
     return random.choice(prefixos) + str(random.randint(100, 9999))
+
 
 def gerar_senha():
     chars = string.ascii_letters + string.digits
     return ''.join(random.choices(chars, k=12))
 
+
 def gerar_pergunta(titulo, tom="variado"):
     tons = {
-        "curioso":     "curiosa e genuína de alguém querendo saber mais antes de comprar",
+        "curioso": "curiosa e genuína de alguém querendo saber mais antes de comprar",
         "interessado": "interessada e positiva demonstrando interesse no produto",
-        "direto":      "direta e curta máximo 8 palavras",
-        "variado":     random.choice(["curiosa", "direta", "simples", "bem curta"]),
+        "direto": "direta e curta máximo 8 palavras",
+        "variado": random.choice(["curiosa", "direta", "simples", "bem curta"]),
     }
     try:
         resposta = groq_client.chat.completions.create(
@@ -107,9 +100,6 @@ def gerar_pergunta(titulo, tom="variado"):
         return random.choice(fallback)
 
 
-# ──────────────────────────────────────────────
-# EMAIL TEMPORÁRIO
-# ──────────────────────────────────────────────
 class MailTM:
     def __init__(self):
         self.email = None
@@ -146,7 +136,7 @@ class MailTM:
         while time.time() - inicio < timeout:
             resp = requests.get(f"{MAILTM_API}/messages", headers=headers)
             for msg in resp.json().get("hydra:member", []):
-                assunto   = msg.get("subject", "").lower()
+                assunto = msg.get("subject", "").lower()
                 remetente = msg.get("from", {}).get("address", "").lower()
                 if "ggmax" in remetente or "verific" in assunto or "confirm" in assunto:
                     detalhe = requests.get(
@@ -160,13 +150,10 @@ class MailTM:
         raise Exception("Timeout: código não chegou")
 
 
-# ──────────────────────────────────────────────
-# AUTOMAÇÃO DO NAVEGADOR
-# ──────────────────────────────────────────────
 async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
-    usuario  = gerar_usuario()
-    senha    = gerar_senha()
-    email    = None
+    usuario = gerar_usuario()
+    senha = gerar_senha()
+    email = None
     pergunta = None
 
     mailtm = MailTM()
@@ -194,7 +181,6 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
         page = await context.new_page()
 
         try:
-            # Cadastrar
             registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
             await page.goto(GGMAX_URL, wait_until="networkidle")
             await asyncio.sleep(random.uniform(1.5, 2.5))
@@ -219,18 +205,18 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
             await page.click("button:has-text('CADASTRAR')")
             await asyncio.sleep(random.uniform(2, 3))
 
-            # Verificar email
             registrar_conta(campanha_id, numero, usuario, email, "", "verificando")
             codigo = mailtm.aguardar_codigo(timeout=120)
             await asyncio.sleep(random.uniform(1, 2))
-            await page.click("input[placeholder*='ódigo'], input[name*='code'], input[type='text']")
-            for char in codigo:
-                await page.type("input[placeholder*='ódigo'], input[name*='code'], input[type='text']", char, delay=80)
-            await asyncio.sleep(0.5)
-            await page.click("button:has-text('Verificar'), button:has-text('Confirmar'), button[type='submit']")
-            await asyncio.sleep(random.uniform(2, 3))
+            campo_codigo = await page.query_selector("input[placeholder*='ódigo'], input[name*='code'], input[type='text']")
+            if campo_codigo:
+                await campo_codigo.click()
+                for char in codigo:
+                    await campo_codigo.type(char, delay=80)
+                await asyncio.sleep(0.5)
+                await page.click("button:has-text('Verificar'), button:has-text('Confirmar'), button[type='submit']")
+                await asyncio.sleep(random.uniform(2, 3))
 
-            # Login
             registrar_conta(campanha_id, numero, usuario, email, "", "logando")
             try:
                 await page.click("text=Entrar em uma conta existente", timeout=4000)
@@ -250,7 +236,6 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
             await page.click("button:has-text('ENTRAR')")
             await asyncio.sleep(random.uniform(2, 3))
 
-            # Gerar e postar pergunta
             pergunta = gerar_pergunta(titulo, tom)
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "perguntando")
             await page.goto(url_anuncio, wait_until="networkidle")
@@ -293,31 +278,30 @@ def rodar_campanha(campanha_id, url_anuncio, titulo, quantidade, tom):
     asyncio.run(executar_campanha_async(campanha_id, url_anuncio, titulo, quantidade, tom))
 
 
-# ──────────────────────────────────────────────
-# ENDPOINTS DO SERVIDOR
-# ──────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "GGMAX BOT online ✓"})
+    return jsonify({"status": "GGMAX BOT online"})
 
-@app.route("/iniciar", methods=["POST"])
+
+@app.route("/iniciar", methods=["POST", "OPTIONS"])
 def iniciar():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
     data = request.json or {}
 
-    # Validar API key
     if data.get("api_key") != BASE44_API_KEY:
         return jsonify({"erro": "API key inválida"}), 401
 
-    campanha_id  = data.get("campanha_id")
-    url_anuncio  = data.get("url_anuncio")
-    titulo       = data.get("titulo", "Produto")
-    quantidade   = int(data.get("quantidade", 5))
-    tom          = data.get("tom", "variado")
+    campanha_id = data.get("campanha_id")
+    url_anuncio = data.get("url_anuncio")
+    titulo      = data.get("titulo", "Produto")
+    quantidade  = int(data.get("quantidade", 5))
+    tom         = data.get("tom", "variado")
 
     if not campanha_id or not url_anuncio:
         return jsonify({"erro": "campanha_id e url_anuncio são obrigatórios"}), 400
 
-    # Rodar em thread separada para não travar o servidor
     thread = threading.Thread(
         target=rodar_campanha,
         args=(campanha_id, url_anuncio, titulo, quantidade, tom)
@@ -329,7 +313,7 @@ def iniciar():
         "status": "iniciado",
         "campanha_id": campanha_id,
         "quantidade": quantidade,
-        "mensagem": f"Campanha iniciada! Acompanhe o progresso no painel Base44."
+        "mensagem": "Campanha iniciada! Acompanhe o progresso no painel."
     })
 
 
