@@ -1,6 +1,5 @@
 """
 GGMAX BOT - Servidor Railway Completo
-Fluxo correto baseado no site real da GGMAX
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -31,9 +30,6 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 campanhas_status = {}
 
 
-# ──────────────────────────────────────────────
-# BASE44 — Reportar progresso
-# ──────────────────────────────────────────────
 def registrar_conta_local(campanha_id, numero, usuario, email, pergunta, status, erro=""):
     if campanha_id not in campanhas_status:
         campanhas_status[campanha_id] = {"contas": [], "campanha_status": "ativa"}
@@ -76,14 +72,7 @@ def atualizar_campanha(campanha_id, status):
         print(f"Erro Base44: {e}")
 
 
-# ──────────────────────────────────────────────
-# GERADORES
-# ──────────────────────────────────────────────
 def gerar_usuario():
-    """
-    Gera usuário no formato: nome + números (tudo minúsculo)
-    Ex: miguelsilva1544, carlosferreira892
-    """
     nomes = ["miguel", "carlos", "gabriel", "lucas", "pedro", "joao", "andre",
              "rafael", "mateus", "felipe", "thiago", "rodrigo", "bruno", "victor"]
     sobrenomes = ["silva", "santos", "oliveira", "souza", "lima", "costa",
@@ -94,14 +83,6 @@ def gerar_usuario():
 
 
 def gerar_senha():
-    """
-    Gera senha válida para GGMAX:
-    - 8 a 20 caracteres
-    - letras maiúsculas e minúsculas
-    - pelo menos um número
-    - pelo menos um caractere especial (#@)
-    Ex: Gabriel@2024
-    """
     nomes = ["Gabriel", "Carlos", "Miguel", "Lucas", "Pedro", "Andre", "Rafael"]
     especiais = ["@", "#"]
     nome = random.choice(nomes)
@@ -110,9 +91,6 @@ def gerar_senha():
     return nome + especial + numero
 
 
-# ──────────────────────────────────────────────
-# E-MAIL TEMPORÁRIO — Mail.tm
-# ──────────────────────────────────────────────
 class MailTM:
     def __init__(self):
         self.email = None
@@ -143,7 +121,6 @@ class MailTM:
         self.token = resp.json().get("token")
 
     def aguardar_link_confirmacao(self, timeout=120):
-        """Aguarda e-mail da GGMAX e extrai o link de confirmação."""
         if not self.token:
             self.autenticar()
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -161,13 +138,11 @@ class MailTM:
                     html  = detalhe.get("html", "") or ""
                     texto = detalhe.get("text", "") or ""
                     conteudo = html + texto
-                    # Extrair link de confirmação da GGMAX
                     links = re.findall(r'https?://[^\s"<>]+ggmax[^\s"<>]+', conteudo)
                     if links:
                         link = links[0].strip()
                         print(f"  ✓ Link de confirmação: {link}")
                         return link
-                    # Fallback: qualquer link de confirmação/verify
                     links2 = re.findall(r'https?://[^\s"<>]*(confirm|verif|activ|ativ)[^\s"<>]*', conteudo, re.IGNORECASE)
                     if links2:
                         link = links2[0].strip()
@@ -177,9 +152,6 @@ class MailTM:
         raise Exception("Timeout: e-mail de confirmação não chegou em 2 minutos")
 
 
-# ──────────────────────────────────────────────
-# GERAÇÃO DE PERGUNTAS COM IA
-# ──────────────────────────────────────────────
 def gerar_pergunta(titulo, tom="variado"):
     tons = {
         "curioso":     "curiosa e genuína de alguém querendo saber mais antes de comprar",
@@ -214,9 +186,39 @@ def gerar_pergunta(titulo, tom="variado"):
         return random.choice(fallback)
 
 
-# ──────────────────────────────────────────────
-# AUTOMAÇÃO DO NAVEGADOR — Fluxo correto GGMAX
-# ──────────────────────────────────────────────
+async def clicar_menu(page):
+    """Tenta várias formas de clicar no menu das 3 barras"""
+    seletores = [
+        "button.menu-toggle",
+        "button.hamburger",
+        "[class*='hamburger']",
+        "[class*='menu-icon']",
+        "header button:last-of-type",
+        "nav button",
+        "button[aria-label*='menu']",
+        "button[aria-label*='Menu']",
+    ]
+    for seletor in seletores:
+        try:
+            await page.click(seletor, timeout=2000)
+            print(f"  ✓ Menu clicado via: {seletor}")
+            return True
+        except:
+            continue
+    # Fallback: JavaScript para encontrar e clicar
+    try:
+        await page.evaluate("""
+            const btns = document.querySelectorAll('header button, nav button');
+            const last = btns[btns.length - 1];
+            if (last) last.click();
+        """)
+        print("  ✓ Menu clicado via JavaScript")
+        return True
+    except:
+        pass
+    return False
+
+
 async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
     usuario = gerar_usuario()
     senha   = gerar_senha()
@@ -226,7 +228,6 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
     print(f"\n{'─'*50}")
     print(f"  [{numero}/{total}] Usuário: {usuario} | Senha: {senha}")
 
-    # 1. Criar e-mail temporário
     mailtm = MailTM()
     try:
         email = mailtm.criar_conta()
@@ -252,109 +253,92 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
         page = await context.new_page()
 
         try:
-            # ── PASSO 1: Abrir GGMAX ──
             registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
             await page.goto(GGMAX_URL, wait_until="networkidle")
             await asyncio.sleep(random.uniform(1.5, 2.5))
 
-            # ── PASSO 2: Clicar nas 3 barras (menu hamburguer) ──
-            await page.locator("header").get_by_role("button").last.click(timeout=8000)
+            # Clicar menu hamburguer
+            await clicar_menu(page)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
-            # ── PASSO 3: Clicar em "Entrar" no menu ──
-            await page.click("text=Entrar", timeout=5000)
+            # Clicar em Entrar
+            await page.click("text=Entrar", timeout=8000)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
-            # ── PASSO 4: Clicar em "Criar uma conta" ──
-            await page.click("text=Criar uma conta", timeout=5000)
+            # Clicar em Criar uma conta
+            await page.click("text=Criar uma conta", timeout=8000)
             await asyncio.sleep(random.uniform(1, 2))
 
-            # ── PASSO 5: Preencher formulário de cadastro ──
-            # Campo Usuário (letras minúsculas + números)
+            # Preencher formulário
             await page.click("input[placeholder='Usuário']")
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(0.3)
             for char in usuario:
                 await page.type("input[placeholder='Usuário']", char, delay=random.randint(60, 140))
-            await asyncio.sleep(random.uniform(0.4, 0.8))
 
-            # Campo E-mail
             await page.click("input[placeholder='E-mail']")
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(0.3)
             for char in email:
                 await page.type("input[placeholder='E-mail']", char, delay=random.randint(60, 140))
-            await asyncio.sleep(random.uniform(0.4, 0.8))
 
-            # Campo Senha
             await page.click("input[placeholder='Senha']")
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(0.3)
             for char in senha:
                 await page.type("input[placeholder='Senha']", char, delay=random.randint(60, 140))
-            await asyncio.sleep(random.uniform(0.3, 0.6))
 
-            # Campo Confirmar senha
             await page.click("input[placeholder='Confirmar senha']")
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(0.3)
             for char in senha:
                 await page.type("input[placeholder='Confirmar senha']", char, delay=random.randint(60, 140))
-            await asyncio.sleep(random.uniform(0.5, 1.0))
 
-            # ── PASSO 6: Clicar em CADASTRAR ──
+            await asyncio.sleep(0.5)
             await page.click("button:has-text('CADASTRAR')")
             await asyncio.sleep(random.uniform(2, 3))
-            print(f"  ✓ Cadastro enviado: {usuario} / {email} / {senha}")
+            print(f"  ✓ Cadastro enviado")
 
-            # ── PASSO 7: Aguardar link de confirmação no e-mail ──
+            # Aguardar link de confirmação
             registrar_conta(campanha_id, numero, usuario, email, "", "verificando")
             link_confirmacao = mailtm.aguardar_link_confirmacao(timeout=120)
 
-            # ── PASSO 8: Clicar no link de confirmação ──
+            # Confirmar e-mail
             await page.goto(link_confirmacao, wait_until="networkidle")
             await asyncio.sleep(random.uniform(2, 3))
             print(f"  ✓ E-mail confirmado!")
 
-            # ── PASSO 9: Fazer login ──
+            # Login
             registrar_conta(campanha_id, numero, usuario, email, "", "logando")
             await page.goto(GGMAX_URL, wait_until="networkidle")
             await asyncio.sleep(random.uniform(1.5, 2.5))
 
-            # Clicar nas 3 barras
-           await page.locator("header").get_by_role("button").last.click(timeout=8000)
+            await clicar_menu(page)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
-            # Clicar em Entrar
-            await page.click("text=Entrar", timeout=5000)
+            await page.click("text=Entrar", timeout=8000)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
-            # Preencher login — campo aceita "Usuário ou e-mail"
             await page.click("input[placeholder='Usuário ou e-mail']")
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(0.3)
             for char in usuario:
                 await page.type("input[placeholder='Usuário ou e-mail']", char, delay=random.randint(60, 140))
-            await asyncio.sleep(random.uniform(0.4, 0.8))
 
             await page.click("input[placeholder='Senha']")
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await asyncio.sleep(0.3)
             for char in senha:
                 await page.type("input[placeholder='Senha']", char, delay=random.randint(60, 140))
-            await asyncio.sleep(random.uniform(0.5, 1.0))
 
-            # Clicar no botão azul ENTRAR
+            await asyncio.sleep(0.5)
             await page.click("button:has-text('ENTRAR')")
             await asyncio.sleep(random.uniform(2, 3))
-            print(f"  ✓ Login realizado: {usuario}")
+            print(f"  ✓ Login realizado")
 
-            # ── PASSO 10: Navegar para o anúncio e fazer pergunta ──
+            # Navegar para anúncio e perguntar
             pergunta = gerar_pergunta(titulo, tom)
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "perguntando")
 
             await page.goto(url_anuncio, wait_until="networkidle")
             await asyncio.sleep(random.uniform(2, 4))
-
-            # Scroll até a seção de perguntas
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.7)")
             await asyncio.sleep(random.uniform(1, 2))
 
-            # Encontrar campo de pergunta
             campo = await page.query_selector(
                 "textarea[placeholder*='pergunta'], textarea[placeholder*='Pergunta'], textarea[placeholder*='Digite']"
             )
@@ -362,18 +346,16 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
                 raise Exception("Campo de pergunta não encontrado")
 
             await campo.click()
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await asyncio.sleep(0.5)
             for char in pergunta:
                 await campo.type(char, delay=random.randint(40, 100))
             await asyncio.sleep(random.uniform(1, 2))
 
-            # Clicar em Perguntar
             await page.click("button:has-text('Perguntar')")
             await asyncio.sleep(random.uniform(2, 3))
 
-            # ── SUCESSO ──
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "concluido")
-            print(f"  ✓ [{numero}/{total}] CONCLUÍDO! Pergunta: \"{pergunta}\"")
+            print(f"  ✓ [{numero}/{total}] CONCLUÍDO!")
 
         except Exception as e:
             print(f"  ✗ [{numero}/{total}] ERRO: {e}")
@@ -384,9 +366,6 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
     time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
 
-# ──────────────────────────────────────────────
-# ORQUESTRADOR
-# ──────────────────────────────────────────────
 async def executar_campanha_async(campanha_id, url_anuncio, titulo, quantidade, tom):
     atualizar_campanha(campanha_id, "ativa")
     for i in range(1, quantidade + 1):
@@ -398,9 +377,6 @@ def rodar_campanha(campanha_id, url_anuncio, titulo, quantidade, tom):
     asyncio.run(executar_campanha_async(campanha_id, url_anuncio, titulo, quantidade, tom))
 
 
-# ──────────────────────────────────────────────
-# ENDPOINTS FLASK
-# ──────────────────────────────────────────────
 @app.route("/")
 def home():
     return send_from_directory(".", "index.html")
