@@ -318,7 +318,7 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
             await asyncio.sleep(random.uniform(1.5, 2.5))
 
             # Clicar nas 3 barras
-            await page.click("button.hamburger, button[aria-label*='menu'], .menu-icon, button:has(svg), header button:last-child", timeout=5000)
+           await page.locator("header").get_by_role("button").last.click(timeout=8000)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
             # Clicar em Entrar
