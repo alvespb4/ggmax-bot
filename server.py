@@ -79,7 +79,7 @@ def gerar_usuario():
              "joao", "andre", "rafael", "mateus", "felipe"]
     sufixo = str(random.randint(10, 999))
     nome = random.choice(nomes) + sufixo
-    return nome  # máximo 12 caracteres
+    return nome  # máximo 16 caracteres
 
 
 def gerar_senha():
