@@ -187,35 +187,70 @@ def gerar_pergunta(titulo, tom="variado"):
 
 
 async def clicar_menu(page):
-    """Tenta várias formas de clicar no menu das 3 barras"""
-    seletores = [
-        "button.menu-toggle",
-        "button.hamburger",
-        "[class*='hamburger']",
-        "[class*='menu-icon']",
-        "header button:last-of-type",
-        "nav button",
-        "button[aria-label*='menu']",
-        "button[aria-label*='Menu']",
-    ]
-    for seletor in seletores:
-        try:
-            await page.click(seletor, timeout=2000)
-            print(f"  ✓ Menu clicado via: {seletor}")
-            return True
-        except:
-            continue
-    # Fallback: JavaScript para encontrar e clicar
+    """Abre o menu usando múltiplas estratégias"""
+    # Estratégia 1: Clicar por posição (canto superior direito)
     try:
-        await page.evaluate("""
-            const btns = document.querySelectorAll('header button, nav button');
-            const last = btns[btns.length - 1];
-            if (last) last.click();
-        """)
-        print("  ✓ Menu clicado via JavaScript")
-        return True
+        viewport = page.viewport_size
+        w = viewport["width"] if viewport else 1366
+        await page.mouse.click(w - 40, 25)
+        await asyncio.sleep(0.8)
+        if await page.query_selector("text=Entrar"):
+            print("  ✓ Menu aberto por coordenada")
+            return True
     except:
         pass
+
+    # Estratégia 2: JavaScript - clicar no último botão do header
+    try:
+        await page.evaluate("""
+            const selectors = ['header', 'nav', '.navbar', '.header', '#header', '#nav'];
+            for (const sel of selectors) {
+                const container = document.querySelector(sel);
+                if (container) {
+                    const btns = container.querySelectorAll('button, a[role="button"], div[role="button"]');
+                    if (btns.length > 0) {
+                        btns[btns.length - 1].click();
+                        break;
+                    }
+                }
+            }
+        """)
+        await asyncio.sleep(0.8)
+        if await page.query_selector("text=Entrar"):
+            print("  ✓ Menu aberto por JS header")
+            return True
+    except:
+        pass
+
+    # Estratégia 3: Clicar em SVG (ícone hamburger)
+    try:
+        await page.evaluate("""
+            const svgs = document.querySelectorAll('svg');
+            for (const svg of svgs) {
+                const parent = svg.closest('button') || svg.closest('a') || svg.parentElement;
+                if (parent) { parent.click(); break; }
+            }
+        """)
+        await asyncio.sleep(0.8)
+        if await page.query_selector("text=Entrar"):
+            print("  ✓ Menu aberto por SVG")
+            return True
+    except:
+        pass
+
+    # Estratégia 4: Listar todos botões para debug
+    try:
+        buttons = await page.query_selector_all("button")
+        print(f"  [DEBUG] Total botões na página: {len(buttons)}")
+        for i, btn in enumerate(buttons[:10]):
+            txt = await btn.inner_text()
+            cls = await btn.get_attribute("class") or ""
+            aria = await btn.get_attribute("aria-label") or ""
+            print(f"    [{i}] txt='{txt[:20]}' class='{cls[:40]}' aria='{aria}'")
+    except:
+        pass
+
+    print("  ⚠ Menu não encontrado por nenhuma estratégia")
     return False
 
 
@@ -254,20 +289,11 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
 
         try:
             registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
-await page.goto(GGMAX_URL, wait_until="networkidle")
-await asyncio.sleep(random.uniform(1.5, 2.5))
+            await page.goto(GGMAX_URL, wait_until="networkidle")
+            await asyncio.sleep(random.uniform(1.5, 2.5))
 
-# DEBUG: salvar HTML e screenshot
-html_content = await page.content()
-print(f"  [DEBUG] Botões encontrados:")
-buttons = await page.query_selector_all("button")
-for btn in buttons:
-    txt = await btn.inner_text()
-    cls = await btn.get_attribute("class") or ""
-    print(f"    btn: '{txt[:30]}' class='{cls[:50]}'")
-
-# Clicar menu hamburguer
-await clicar_menu(page)
+            # Clicar menu hamburguer
+            await clicar_menu(page)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
             # Clicar em Entrar
