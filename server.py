@@ -1,6 +1,5 @@
 """
-GGMAX BOT - Servidor Railway Completo
-Anti-Cloudflare com espera longa
+GGMAX BOT - API Direta (sem Playwright, sem Cloudflare)
 """
 
 import sys
@@ -10,14 +9,12 @@ sys.stdout.reconfigure(line_buffering=True)
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import asyncio
 import random
 import string
 import time
 import re
 import requests
 import threading
-from playwright.async_api import async_playwright
 from groq import Groq
 
 app = Flask(__name__)
@@ -27,25 +24,12 @@ GROQ_API_KEY    = "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"
 BASE44_ENDPOINT = "https://preview-sandbox--69ab80547aecb9090ac003a1.base44.app/functions/webhook"
 BASE44_API_KEY  = "5e03b0370d5f42d8a6e011517930bfe4"
 MAILTM_API      = "https://api.mail.tm"
-GGMAX_URL       = "https://ggmax.com.br"
+GGMAX_API       = "https://ggmax.com.br/api"
 DELAY_MIN       = 3.0
 DELAY_MAX       = 8.0
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 campanhas_status = {}
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-]
-
-STEALTH_JS = """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US'] });
-window.chrome = { runtime: {} };
-"""
 
 
 def registrar_conta_local(campanha_id, numero, usuario, email, pergunta, status, erro=""):
@@ -101,6 +85,25 @@ def gerar_usuario():
 def gerar_senha():
     nomes = ["Gabriel", "Carlos", "Miguel", "Lucas", "Pedro", "Andre", "Rafael"]
     return random.choice(nomes) + random.choice(["@", "#"]) + str(random.randint(10, 9999))
+
+
+def headers_ggmax(token=None):
+    h = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": "https://ggmax.com.br",
+        "Referer": "https://ggmax.com.br/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 
 class MailTM:
@@ -189,113 +192,16 @@ def gerar_pergunta(titulo, tom="variado"):
         ])
 
 
-async def criar_pagina_stealth(browser):
-    ua = random.choice(USER_AGENTS)
-    context = await browser.new_context(
-        viewport={"width": random.randint(1280, 1920), "height": random.randint(700, 900)},
-        locale="pt-BR",
-        timezone_id="America/Sao_Paulo",
-        user_agent=ua,
-        extra_http_headers={
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-        }
-    )
-    await context.add_init_script(STEALTH_JS)
-    page = await context.new_page()
-    return context, page
+def extrair_id_anuncio(url_anuncio):
+    """Extrai o ID ou slug do anúncio da URL"""
+    # URL formato: https://ggmax.com.br/anuncio/SLUG--ID
+    match = re.search(r'/anuncio/([^/?#]+)', url_anuncio)
+    if match:
+        return match.group(1)
+    return None
 
 
-async def aguardar_site_carregar(page, timeout=45):
-    """Aguarda o Cloudflare passar e o site GGMAX carregar de verdade"""
-    inicio = time.time()
-    while time.time() - inicio < timeout:
-        title = await page.title()
-        url = page.url
-        print(f"  CHECANDO: title='{title}'", flush=True)
-
-        # Cloudflare ainda rodando
-        if "momento" in title.lower() or "moment" in title.lower() or title.strip() == "":
-            print("  CLOUDFLARE_ATIVO, aguardando 4s...", flush=True)
-            await asyncio.sleep(4)
-            continue
-
-        # Site carregou!
-        if title and "cloudflare" not in title.lower() and title != "":
-            print(f"  SITE_CARREGADO: '{title}'", flush=True)
-            return True
-
-        await asyncio.sleep(2)
-
-    print("  TIMEOUT_CLOUDFLARE", flush=True)
-    return False
-
-
-async def clicar_menu(page):
-    print("  ABRINDO_MENU...", flush=True)
-
-    # Debug botões
-    try:
-        info = await page.evaluate("""
-            () => {
-                const result = [];
-                document.querySelectorAll('button, [role="button"]').forEach((el, i) => {
-                    if (i < 10) result.push({
-                        text: el.innerText.trim().substring(0, 30),
-                        cls: (el.className || '').substring(0, 60),
-                        aria: el.getAttribute('aria-label') || '',
-                        id: el.id || ''
-                    });
-                });
-                return result;
-            }
-        """)
-        for item in info:
-            print(f"  BTN: '{item['text']}' cls='{item['cls']}'", flush=True)
-    except:
-        pass
-
-    # Estratégia 1: coordenada canto direito
-    try:
-        vp = page.viewport_size
-        w = vp["width"] if vp else 1366
-        await page.mouse.click(w - 40, 30)
-        await asyncio.sleep(2)
-        if await page.query_selector("text=Entrar"):
-            print("  MENU_OK_COORDENADA", flush=True)
-            return True
-    except:
-        pass
-
-    # Estratégia 2: JS topo direito
-    try:
-        await page.evaluate("""
-            () => {
-                const all = Array.from(document.querySelectorAll('*'));
-                for (const el of all) {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.top >= 0 && rect.top < 80 && rect.right > window.innerWidth * 0.7) {
-                        el.click();
-                        return;
-                    }
-                }
-            }
-        """)
-        await asyncio.sleep(2)
-        if await page.query_selector("text=Entrar"):
-            print("  MENU_OK_JS", flush=True)
-            return True
-    except:
-        pass
-
-    print("  MENU_FALHOU", flush=True)
-    return False
-
-
-async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
+def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
     usuario = gerar_usuario()
     senha   = gerar_senha()
     email   = None
@@ -303,6 +209,7 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
 
     print(f"INICIANDO_CONTA [{numero}/{total}] user={usuario}", flush=True)
 
+    # 1. Criar e-mail temporário
     mailtm = MailTM()
     try:
         email = mailtm.criar_conta()
@@ -311,122 +218,103 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
         registrar_conta(campanha_id, numero, usuario, "", "", "erro", str(e))
         return
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-web-security",
-                "--window-size=1366,768",
-            ]
+    try:
+        registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
+
+        # 2. Registrar conta na GGMAX via API
+        print(f"  REGISTRANDO_API...", flush=True)
+        resp = requests.post(f"{GGMAX_API}/register",
+            json={
+                "username": usuario,
+                "email": email,
+                "password": senha,
+                "confirmPassword": senha,
+            },
+            headers=headers_ggmax(),
+            timeout=30
         )
-        context, page = await criar_pagina_stealth(browser)
+        print(f"  REGISTER_STATUS: {resp.status_code} | {resp.text[:200]}", flush=True)
 
-        try:
-            registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
-            print(f"  ABRINDO_GGMAX...", flush=True)
-            await page.goto(GGMAX_URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(2)
+        if resp.status_code not in (200, 201):
+            raise Exception(f"Erro registro: {resp.status_code} - {resp.text[:100]}")
 
-            # Aguardar Cloudflare passar (até 45s)
-            ok = await aguardar_site_carregar(page, timeout=45)
-            if not ok:
-                raise Exception("Cloudflare não passou em 45 segundos")
+        # 3. Aguardar e-mail de confirmação
+        registrar_conta(campanha_id, numero, usuario, email, "", "verificando")
+        link_confirmacao = mailtm.aguardar_link_confirmacao(timeout=120)
 
-            await asyncio.sleep(2)
-            await clicar_menu(page)
-            await asyncio.sleep(2)
+        # 4. Clicar no link de confirmação
+        print(f"  CONFIRMANDO_EMAIL...", flush=True)
+        resp_confirm = requests.get(link_confirmacao,
+            headers=headers_ggmax(),
+            allow_redirects=True,
+            timeout=30
+        )
+        print(f"  CONFIRM_STATUS: {resp_confirm.status_code}", flush=True)
+        time.sleep(2)
 
-            await page.click("text=Entrar", timeout=10000)
-            await asyncio.sleep(1.5)
+        # 5. Login via API
+        registrar_conta(campanha_id, numero, usuario, email, "", "logando")
+        print(f"  FAZENDO_LOGIN...", flush=True)
+        resp_login = requests.post(f"{GGMAX_API}/auth",
+            json={
+                "username": usuario,
+                "password": senha,
+                "googleAccessToken": "",
+                "code": None,
+                "validation": None,
+            },
+            headers=headers_ggmax(),
+            timeout=30
+        )
+        print(f"  LOGIN_STATUS: {resp_login.status_code} | {resp_login.text[:200]}", flush=True)
 
-            await page.click("text=Criar uma conta", timeout=10000)
-            await asyncio.sleep(2)
+        if resp_login.status_code not in (200, 201):
+            raise Exception(f"Erro login: {resp_login.status_code} - {resp_login.text[:100]}")
 
-            await page.fill("input[placeholder='Usuário']", usuario)
-            await asyncio.sleep(0.5)
-            await page.fill("input[placeholder='E-mail']", email)
-            await asyncio.sleep(0.5)
-            await page.fill("input[placeholder='Senha']", senha)
-            await asyncio.sleep(0.5)
-            await page.fill("input[placeholder='Confirmar senha']", senha)
-            await asyncio.sleep(0.5)
+        login_data = resp_login.json()
+        token = login_data.get("token") or login_data.get("access_token") or login_data.get("accessToken")
+        if not token:
+            # Tentar encontrar token no objeto retornado
+            print(f"  LOGIN_DATA: {str(login_data)[:300]}", flush=True)
+            raise Exception("Token não encontrado na resposta de login")
 
-            await page.click("button:has-text('CADASTRAR')")
-            await asyncio.sleep(3)
-            print(f"  CADASTRO_ENVIADO", flush=True)
+        print(f"  LOGIN_OK: token={token[:20]}...", flush=True)
 
-            registrar_conta(campanha_id, numero, usuario, email, "", "verificando")
-            link_confirmacao = mailtm.aguardar_link_confirmacao(timeout=120)
+        # 6. Fazer pergunta no anúncio
+        pergunta = gerar_pergunta(titulo, tom)
+        registrar_conta(campanha_id, numero, usuario, email, pergunta, "perguntando")
+        print(f"  PERGUNTA: {pergunta}", flush=True)
 
-            await page.goto(link_confirmacao, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
-            print(f"  EMAIL_CONFIRMADO", flush=True)
+        # Extrair slug/id do anúncio
+        slug = extrair_id_anuncio(url_anuncio)
+        print(f"  SLUG_ANUNCIO: {slug}", flush=True)
 
-            registrar_conta(campanha_id, numero, usuario, email, "", "logando")
-            await page.goto(GGMAX_URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(2)
-            await aguardar_site_carregar(page, timeout=30)
-            await asyncio.sleep(2)
+        # Tentar endpoint de perguntas
+        resp_pergunta = requests.post(f"{GGMAX_API}/listings/{slug}/questions",
+            json={"question": pergunta},
+            headers=headers_ggmax(token=token),
+            timeout=30
+        )
+        print(f"  PERGUNTA_STATUS: {resp_pergunta.status_code} | {resp_pergunta.text[:200]}", flush=True)
 
-            await clicar_menu(page)
-            await asyncio.sleep(2)
-
-            await page.click("text=Entrar", timeout=10000)
-            await asyncio.sleep(1.5)
-
-            await page.fill("input[placeholder='Usuário ou e-mail']", usuario)
-            await asyncio.sleep(0.5)
-            await page.fill("input[placeholder='Senha']", senha)
-            await asyncio.sleep(0.5)
-
-            await page.click("button:has-text('ENTRAR')")
-            await asyncio.sleep(3)
-            print(f"  LOGIN_REALIZADO", flush=True)
-
-            pergunta = gerar_pergunta(titulo, tom)
-            registrar_conta(campanha_id, numero, usuario, email, pergunta, "perguntando")
-            print(f"  PERGUNTA: {pergunta}", flush=True)
-
-            await page.goto(url_anuncio, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(4)
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.7)")
-            await asyncio.sleep(2)
-
-            campo = await page.query_selector(
-                "textarea[placeholder*='pergunta'], textarea[placeholder*='Pergunta'], textarea[placeholder*='Digite']"
-            )
-            if not campo:
-                raise Exception("Campo de pergunta não encontrado")
-
-            await campo.fill(pergunta)
-            await asyncio.sleep(1.5)
-            await page.click("button:has-text('Perguntar')")
-            await asyncio.sleep(3)
-
+        if resp_pergunta.status_code in (200, 201):
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "concluido")
             print(f"  CONCLUIDO [{numero}/{total}]", flush=True)
+        else:
+            raise Exception(f"Erro pergunta: {resp_pergunta.status_code} - {resp_pergunta.text[:100]}")
 
-        except Exception as e:
-            print(f"  ERRO [{numero}/{total}]: {e}", flush=True)
-            registrar_conta(campanha_id, numero, usuario, email or "", pergunta or "", "erro", str(e))
-        finally:
-            await browser.close()
+    except Exception as e:
+        print(f"  ERRO [{numero}/{total}]: {e}", flush=True)
+        registrar_conta(campanha_id, numero, usuario, email or "", pergunta or "", "erro", str(e))
 
     time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
 
-async def executar_campanha_async(campanha_id, url_anuncio, titulo, quantidade, tom):
+def executar_campanha(campanha_id, url_anuncio, titulo, quantidade, tom):
     atualizar_campanha(campanha_id, "ativa")
     for i in range(1, quantidade + 1):
-        await processar_conta(campanha_id, url_anuncio, titulo, tom, i, quantidade)
+        processar_conta(campanha_id, url_anuncio, titulo, tom, i, quantidade)
     atualizar_campanha(campanha_id, "concluida")
-
-
-def rodar_campanha(campanha_id, url_anuncio, titulo, quantidade, tom):
-    asyncio.run(executar_campanha_async(campanha_id, url_anuncio, titulo, quantidade, tom))
 
 
 @app.route("/")
@@ -450,7 +338,7 @@ def iniciar():
         return jsonify({"erro": "campanha_id e url_anuncio são obrigatórios"}), 400
     campanhas_status[campanha_id] = {"contas": [], "campanha_status": "ativa"}
     thread = threading.Thread(
-        target=rodar_campanha,
+        target=executar_campanha,
         args=(campanha_id, url_anuncio, titulo, quantidade, tom)
     )
     thread.daemon = True
