@@ -1,5 +1,6 @@
 """
 GGMAX BOT - Servidor Railway Completo
+Anti-Cloudflare + stealth
 """
 
 import sys
@@ -32,6 +33,24 @@ DELAY_MAX       = 8.0
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 campanhas_status = {}
+
+# User agents reais de Chrome recente
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+]
+
+# Script stealth para injetar antes de cada página
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US'] });
+window.chrome = { runtime: {} };
+Object.defineProperty(navigator, 'permissions', {
+    get: () => ({ query: () => Promise.resolve({ state: 'granted' }) })
+});
+"""
 
 
 def registrar_conta_local(campanha_id, numero, usuario, email, pergunta, status, erro=""):
@@ -81,18 +100,12 @@ def gerar_usuario():
              "rafael", "mateus", "felipe", "thiago", "rodrigo", "bruno", "victor"]
     sobrenomes = ["silva", "santos", "oliveira", "souza", "lima", "costa",
                   "ferreira", "alves", "pereira", "gomes", "martins"]
-    nome = random.choice(nomes) + random.choice(sobrenomes)
-    numero = str(random.randint(100, 9999))
-    return nome + numero
+    return random.choice(nomes) + random.choice(sobrenomes) + str(random.randint(100, 9999))
 
 
 def gerar_senha():
     nomes = ["Gabriel", "Carlos", "Miguel", "Lucas", "Pedro", "Andre", "Rafael"]
-    especiais = ["@", "#"]
-    nome = random.choice(nomes)
-    numero = str(random.randint(10, 9999))
-    especial = random.choice(especiais)
-    return nome + especial + numero
+    return random.choice(nomes) + random.choice(["@", "#"]) + str(random.randint(10, 9999))
 
 
 class MailTM:
@@ -155,108 +168,135 @@ class MailTM:
 
 
 def gerar_pergunta(titulo, tom="variado"):
-    tons = {
-        "curioso":     "curiosa e genuína de alguém querendo saber mais antes de comprar",
-        "interessado": "interessada e positiva demonstrando interesse no produto",
-        "direto":      "direta e curta máximo 8 palavras",
-        "variado":     random.choice(["curiosa", "direta", "simples", "bem curta"]),
-    }
     try:
+        tons = {
+            "curioso": "curiosa e genuína",
+            "interessado": "interessada e positiva",
+            "direto": "direta e curta",
+            "variado": random.choice(["curiosa", "direta", "simples"]),
+        }
         resposta = groq_client.chat.completions.create(
             model="llama3-8b-8192",
             max_tokens=60,
             messages=[{"role": "user", "content": (
-                f"Gere UMA pergunta {tons.get(tom, 'curiosa')} para este produto: '{titulo}'. "
-                "Deve parecer natural de um comprador real no Brasil. "
-                "Retorne APENAS a pergunta sem aspas sem explicações. Máximo 15 palavras."
+                f"Gere UMA pergunta {tons.get(tom, 'curiosa')} para: '{titulo}'. "
+                "Comprador brasileiro. APENAS a pergunta. Máximo 15 palavras."
             )}]
         )
         return resposta.choices[0].message.content.strip()
     except:
-        fallback = [
+        return random.choice([
             "Qual o prazo de entrega após o pagamento?",
             "Funciona em qualquer dispositivo?",
             "Tem suporte caso tenha algum problema?",
-            "Posso usar em mais de um aparelho?",
             "Como recebo após confirmar o pagamento?",
-        ]
-        return random.choice(fallback)
+            "Funciona no celular Android?",
+        ])
+
+
+async def criar_pagina_stealth(browser):
+    """Cria contexto e página com configurações anti-detecção"""
+    ua = random.choice(USER_AGENTS)
+    context = await browser.new_context(
+        viewport={"width": random.randint(1280, 1920), "height": random.randint(700, 900)},
+        locale="pt-BR",
+        timezone_id="America/Sao_Paulo",
+        user_agent=ua,
+        extra_http_headers={
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+    )
+    await context.add_init_script(STEALTH_JS)
+    page = await context.new_page()
+    return context, page
+
+
+async def aguardar_cloudflare(page, timeout=30):
+    """Aguarda Cloudflare resolver se necessário"""
+    inicio = time.time()
+    while time.time() - inicio < timeout:
+        title = await page.title()
+        url = page.url
+        print(f"  PAGE_TITLE: {title} | URL: {url}", flush=True)
+        # Se passou do cloudflare
+        if "ggmax" in title.lower() or "anuncio" in url or "login" in url:
+            print("  CLOUDFLARE_PASSOU", flush=True)
+            return True
+        # Se ainda está no challenge
+        if "just a moment" in title.lower() or "cloudflare" in title.lower():
+            print("  AGUARDANDO_CLOUDFLARE...", flush=True)
+            await asyncio.sleep(3)
+            continue
+        # Página carregou mas não é cloudflare nem ggmax esperado
+        print(f"  PAGINA_DESCONHECIDA: {title}", flush=True)
+        return True
+    return False
 
 
 async def clicar_menu(page):
     print("  TENTANDO_ABRIR_MENU...", flush=True)
 
-    # Listar todos elementos clicaveis para debug
+    # Debug: mostrar título e URL atual
+    title = await page.title()
+    url = page.url
+    print(f"  ESTADO_ATUAL: title='{title}' url='{url}'", flush=True)
+
+    # Debug: listar elementos
     try:
         info = await page.evaluate("""
             () => {
                 const result = [];
-                const btns = document.querySelectorAll('button, [role="button"], a');
-                btns.forEach((el, i) => {
-                    if (i < 15) {
-                        result.push({
-                            tag: el.tagName,
-                            text: el.innerText.trim().substring(0, 30),
-                            cls: (el.className || '').substring(0, 50),
-                            aria: el.getAttribute('aria-label') || ''
-                        });
-                    }
+                document.querySelectorAll('button, [role="button"]').forEach((el, i) => {
+                    if (i < 10) result.push({
+                        tag: el.tagName,
+                        text: el.innerText.trim().substring(0, 30),
+                        cls: (el.className || '').substring(0, 60),
+                        aria: el.getAttribute('aria-label') || '',
+                        id: el.id || ''
+                    });
                 });
                 return result;
             }
         """)
         for item in info:
-            print(f"  EL: tag={item['tag']} text='{item['text']}' cls='{item['cls']}' aria='{item['aria']}'", flush=True)
+            print(f"  BTN: '{item['text']}' cls='{item['cls']}' aria='{item['aria']}' id='{item['id']}'", flush=True)
     except Exception as e:
         print(f"  DEBUG_ERRO: {e}", flush=True)
 
-    # Estratégia 1: coordenada canto superior direito
+    # Estratégia 1: coordenada canto direito
     try:
-        viewport = page.viewport_size
-        w = viewport["width"] if viewport else 1366
-        await page.mouse.click(w - 40, 25)
-        await asyncio.sleep(1.0)
+        vp = page.viewport_size
+        w = vp["width"] if vp else 1366
+        await page.mouse.click(w - 40, 30)
+        await asyncio.sleep(1.5)
         if await page.query_selector("text=Entrar"):
             print("  MENU_ABERTO_COORDENADA", flush=True)
             return True
     except:
         pass
 
-    # Estratégia 2: JS no header
+    # Estratégia 2: JS agressivo
     try:
         await page.evaluate("""
             () => {
-                const selectors = ['header', 'nav', '.navbar', '.header', '#header', '#nav'];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        const btns = el.querySelectorAll('button, a[role="button"]');
-                        if (btns.length > 0) { btns[btns.length-1].click(); return; }
+                // Tentar todos os elementos clicáveis no topo da página
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.top < 80 && rect.right > window.innerWidth - 100) {
+                        el.click();
+                        break;
                     }
                 }
             }
         """)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.5)
         if await page.query_selector("text=Entrar"):
-            print("  MENU_ABERTO_JS", flush=True)
-            return True
-    except:
-        pass
-
-    # Estratégia 3: SVG
-    try:
-        await page.evaluate("""
-            () => {
-                const svgs = document.querySelectorAll('svg');
-                for (const svg of svgs) {
-                    const p = svg.closest('button') || svg.closest('a') || svg.parentElement;
-                    if (p) { p.click(); return; }
-                }
-            }
-        """)
-        await asyncio.sleep(1.0)
-        if await page.query_selector("text=Entrar"):
-            print("  MENU_ABERTO_SVG", flush=True)
+            print("  MENU_ABERTO_JS_TOPO", flush=True)
             return True
     except:
         pass
@@ -284,31 +324,44 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"]
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1366,768",
+            ]
         )
-        context = await browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-        )
-        page = await context.new_page()
+        context, page = await criar_pagina_stealth(browser)
 
         try:
             registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
             print(f"  ABRINDO_GGMAX...", flush=True)
-            await page.goto(GGMAX_URL, wait_until="networkidle")
+
+            # Abrir com timeout maior para Cloudflare
+            await page.goto(GGMAX_URL, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+
+            # Aguardar Cloudflare
+            await aguardar_cloudflare(page, timeout=20)
             await asyncio.sleep(2)
-            print(f"  GGMAX_ABERTO: {page.url}", flush=True)
+
+            # Se ainda no Cloudflare, tentar recarregar
+            title = await page.title()
+            if "just a moment" in title.lower() or "cloudflare" in title.lower():
+                print("  RECARREGANDO_APOS_CLOUDFLARE...", flush=True)
+                await page.reload(wait_until="domcontentloaded")
+                await asyncio.sleep(5)
 
             await clicar_menu(page)
-            await asyncio.sleep(1)
-
-            await page.click("text=Entrar", timeout=8000)
-            await asyncio.sleep(1)
-
-            await page.click("text=Criar uma conta", timeout=8000)
             await asyncio.sleep(1.5)
+
+            await page.click("text=Entrar", timeout=10000)
+            await asyncio.sleep(1.5)
+
+            await page.click("text=Criar uma conta", timeout=10000)
+            await asyncio.sleep(2)
 
             await page.fill("input[placeholder='Usuário']", usuario)
             await asyncio.sleep(0.5)
@@ -326,19 +379,20 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
             registrar_conta(campanha_id, numero, usuario, email, "", "verificando")
             link_confirmacao = mailtm.aguardar_link_confirmacao(timeout=120)
 
-            await page.goto(link_confirmacao, wait_until="networkidle")
+            await page.goto(link_confirmacao, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
             print(f"  EMAIL_CONFIRMADO", flush=True)
 
             registrar_conta(campanha_id, numero, usuario, email, "", "logando")
-            await page.goto(GGMAX_URL, wait_until="networkidle")
-            await asyncio.sleep(2)
+            await page.goto(GGMAX_URL, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+            await aguardar_cloudflare(page, timeout=15)
 
             await clicar_menu(page)
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.5)
 
-            await page.click("text=Entrar", timeout=8000)
-            await asyncio.sleep(1)
+            await page.click("text=Entrar", timeout=10000)
+            await asyncio.sleep(1.5)
 
             await page.fill("input[placeholder='Usuário ou e-mail']", usuario)
             await asyncio.sleep(0.5)
@@ -353,8 +407,8 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "perguntando")
             print(f"  PERGUNTA: {pergunta}", flush=True)
 
-            await page.goto(url_anuncio, wait_until="networkidle")
-            await asyncio.sleep(3)
+            await page.goto(url_anuncio, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(4)
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.7)")
             await asyncio.sleep(2)
 
