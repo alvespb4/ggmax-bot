@@ -2,6 +2,11 @@
 GGMAX BOT - Servidor Railway Completo
 """
 
+import sys
+import os
+os.environ["PYTHONUNBUFFERED"] = "1"
+sys.stdout.reconfigure(line_buffering=True)
+
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import asyncio
@@ -11,7 +16,6 @@ import time
 import re
 import requests
 import threading
-import os
 from playwright.async_api import async_playwright
 from groq import Groq
 
@@ -55,7 +59,7 @@ def registrar_conta(campanha_id, numero, usuario, email, pergunta, status, erro=
             "erro": erro,
         }, timeout=10)
     except Exception as e:
-        print(f"Erro Base44: {e}")
+        print(f"Erro Base44: {e}", flush=True)
 
 
 def atualizar_campanha(campanha_id, status):
@@ -69,7 +73,7 @@ def atualizar_campanha(campanha_id, status):
             "status": status,
         }, timeout=10)
     except Exception as e:
-        print(f"Erro Base44: {e}")
+        print(f"Erro Base44: {e}", flush=True)
 
 
 def gerar_usuario():
@@ -111,7 +115,7 @@ class MailTM:
         })
         if resp.status_code not in (200, 201):
             raise Exception(f"Erro criar email: {resp.text}")
-        print(f"  ✓ E-mail criado: {self.email}")
+        print(f"  EMAIL_CRIADO: {self.email}", flush=True)
         return self.email
 
     def autenticar(self):
@@ -125,7 +129,7 @@ class MailTM:
             self.autenticar()
         headers = {"Authorization": f"Bearer {self.token}"}
         inicio = time.time()
-        print("  ⏳ Aguardando e-mail de confirmação...")
+        print("  AGUARDANDO_EMAIL...", flush=True)
         while time.time() - inicio < timeout:
             resp = requests.get(f"{MAILTM_API}/messages", headers=headers)
             for msg in resp.json().get("hydra:member", []):
@@ -140,16 +144,14 @@ class MailTM:
                     conteudo = html + texto
                     links = re.findall(r'https?://[^\s"<>]+ggmax[^\s"<>]+', conteudo)
                     if links:
-                        link = links[0].strip()
-                        print(f"  ✓ Link de confirmação: {link}")
-                        return link
+                        print(f"  LINK_CONFIRMACAO: {links[0]}", flush=True)
+                        return links[0].strip()
                     links2 = re.findall(r'https?://[^\s"<>]*(confirm|verif|activ|ativ)[^\s"<>]*', conteudo, re.IGNORECASE)
                     if links2:
-                        link = links2[0].strip()
-                        print(f"  ✓ Link encontrado: {link}")
-                        return link
+                        print(f"  LINK_ENCONTRADO: {links2[0]}", flush=True)
+                        return links2[0].strip()
             time.sleep(5)
-        raise Exception("Timeout: e-mail de confirmação não chegou em 2 minutos")
+        raise Exception("Timeout: e-mail não chegou em 2 minutos")
 
 
 def gerar_pergunta(titulo, tom="variado"):
@@ -177,80 +179,89 @@ def gerar_pergunta(titulo, tom="variado"):
             "Tem suporte caso tenha algum problema?",
             "Posso usar em mais de um aparelho?",
             "Como recebo após confirmar o pagamento?",
-            "Existe garantia inclusa?",
-            "É possível renovar quando vencer?",
-            "Funciona no celular Android?",
-            "Quanto tempo leva para ativar?",
-            "Tem alguma restrição de uso?",
         ]
         return random.choice(fallback)
 
 
 async def clicar_menu(page):
-    """Abre o menu usando múltiplas estratégias"""
-    # Estratégia 1: Clicar por posição (canto superior direito)
+    print("  TENTANDO_ABRIR_MENU...", flush=True)
+
+    # Listar todos elementos clicaveis para debug
+    try:
+        info = await page.evaluate("""
+            () => {
+                const result = [];
+                const btns = document.querySelectorAll('button, [role="button"], a');
+                btns.forEach((el, i) => {
+                    if (i < 15) {
+                        result.push({
+                            tag: el.tagName,
+                            text: el.innerText.trim().substring(0, 30),
+                            cls: (el.className || '').substring(0, 50),
+                            aria: el.getAttribute('aria-label') || ''
+                        });
+                    }
+                });
+                return result;
+            }
+        """)
+        for item in info:
+            print(f"  EL: tag={item['tag']} text='{item['text']}' cls='{item['cls']}' aria='{item['aria']}'", flush=True)
+    except Exception as e:
+        print(f"  DEBUG_ERRO: {e}", flush=True)
+
+    # Estratégia 1: coordenada canto superior direito
     try:
         viewport = page.viewport_size
         w = viewport["width"] if viewport else 1366
         await page.mouse.click(w - 40, 25)
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.0)
         if await page.query_selector("text=Entrar"):
-            print("  ✓ Menu aberto por coordenada")
+            print("  MENU_ABERTO_COORDENADA", flush=True)
             return True
     except:
         pass
 
-    # Estratégia 2: JavaScript - clicar no último botão do header
+    # Estratégia 2: JS no header
     try:
         await page.evaluate("""
-            const selectors = ['header', 'nav', '.navbar', '.header', '#header', '#nav'];
-            for (const sel of selectors) {
-                const container = document.querySelector(sel);
-                if (container) {
-                    const btns = container.querySelectorAll('button, a[role="button"], div[role="button"]');
-                    if (btns.length > 0) {
-                        btns[btns.length - 1].click();
-                        break;
+            () => {
+                const selectors = ['header', 'nav', '.navbar', '.header', '#header', '#nav'];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const btns = el.querySelectorAll('button, a[role="button"]');
+                        if (btns.length > 0) { btns[btns.length-1].click(); return; }
                     }
                 }
             }
         """)
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.0)
         if await page.query_selector("text=Entrar"):
-            print("  ✓ Menu aberto por JS header")
+            print("  MENU_ABERTO_JS", flush=True)
             return True
     except:
         pass
 
-    # Estratégia 3: Clicar em SVG (ícone hamburger)
+    # Estratégia 3: SVG
     try:
         await page.evaluate("""
-            const svgs = document.querySelectorAll('svg');
-            for (const svg of svgs) {
-                const parent = svg.closest('button') || svg.closest('a') || svg.parentElement;
-                if (parent) { parent.click(); break; }
+            () => {
+                const svgs = document.querySelectorAll('svg');
+                for (const svg of svgs) {
+                    const p = svg.closest('button') || svg.closest('a') || svg.parentElement;
+                    if (p) { p.click(); return; }
+                }
             }
         """)
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.0)
         if await page.query_selector("text=Entrar"):
-            print("  ✓ Menu aberto por SVG")
+            print("  MENU_ABERTO_SVG", flush=True)
             return True
     except:
         pass
 
-    # Estratégia 4: Listar todos botões para debug
-    try:
-        buttons = await page.query_selector_all("button")
-        print(f"  [DEBUG] Total botões na página: {len(buttons)}")
-        for i, btn in enumerate(buttons[:10]):
-            txt = await btn.inner_text()
-            cls = await btn.get_attribute("class") or ""
-            aria = await btn.get_attribute("aria-label") or ""
-            print(f"    [{i}] txt='{txt[:20]}' class='{cls[:40]}' aria='{aria}'")
-    except:
-        pass
-
-    print("  ⚠ Menu não encontrado por nenhuma estratégia")
+    print("  MENU_NAO_ENCONTRADO", flush=True)
     return False
 
 
@@ -260,25 +271,21 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
     email   = None
     pergunta = None
 
-    print(f"\n{'─'*50}")
-    print(f"  [{numero}/{total}] Usuário: {usuario} | Senha: {senha}")
+    print(f"INICIANDO_CONTA [{numero}/{total}] user={usuario}", flush=True)
 
     mailtm = MailTM()
     try:
         email = mailtm.criar_conta()
     except Exception as e:
+        print(f"ERRO_EMAIL: {e}", flush=True)
         registrar_conta(campanha_id, numero, usuario, "", "", "erro", str(e))
         return
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                f"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.randint(110,125)}.0.0.0 Safari/537.36"
-            ]
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"]
         )
         context = await browser.new_context(
             viewport={"width": 1366, "height": 768},
@@ -289,90 +296,67 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
 
         try:
             registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
+            print(f"  ABRINDO_GGMAX...", flush=True)
             await page.goto(GGMAX_URL, wait_until="networkidle")
-            await asyncio.sleep(random.uniform(1.5, 2.5))
+            await asyncio.sleep(2)
+            print(f"  GGMAX_ABERTO: {page.url}", flush=True)
 
-            # Clicar menu hamburguer
             await clicar_menu(page)
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            await asyncio.sleep(1)
 
-            # Clicar em Entrar
             await page.click("text=Entrar", timeout=8000)
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            await asyncio.sleep(1)
 
-            # Clicar em Criar uma conta
             await page.click("text=Criar uma conta", timeout=8000)
-            await asyncio.sleep(random.uniform(1, 2))
+            await asyncio.sleep(1.5)
 
-            # Preencher formulário
-            await page.click("input[placeholder='Usuário']")
-            await asyncio.sleep(0.3)
-            for char in usuario:
-                await page.type("input[placeholder='Usuário']", char, delay=random.randint(60, 140))
-
-            await page.click("input[placeholder='E-mail']")
-            await asyncio.sleep(0.3)
-            for char in email:
-                await page.type("input[placeholder='E-mail']", char, delay=random.randint(60, 140))
-
-            await page.click("input[placeholder='Senha']")
-            await asyncio.sleep(0.3)
-            for char in senha:
-                await page.type("input[placeholder='Senha']", char, delay=random.randint(60, 140))
-
-            await page.click("input[placeholder='Confirmar senha']")
-            await asyncio.sleep(0.3)
-            for char in senha:
-                await page.type("input[placeholder='Confirmar senha']", char, delay=random.randint(60, 140))
-
+            await page.fill("input[placeholder='Usuário']", usuario)
             await asyncio.sleep(0.5)
-            await page.click("button:has-text('CADASTRAR')")
-            await asyncio.sleep(random.uniform(2, 3))
-            print(f"  ✓ Cadastro enviado")
+            await page.fill("input[placeholder='E-mail']", email)
+            await asyncio.sleep(0.5)
+            await page.fill("input[placeholder='Senha']", senha)
+            await asyncio.sleep(0.5)
+            await page.fill("input[placeholder='Confirmar senha']", senha)
+            await asyncio.sleep(0.5)
 
-            # Aguardar link de confirmação
+            await page.click("button:has-text('CADASTRAR')")
+            await asyncio.sleep(3)
+            print(f"  CADASTRO_ENVIADO", flush=True)
+
             registrar_conta(campanha_id, numero, usuario, email, "", "verificando")
             link_confirmacao = mailtm.aguardar_link_confirmacao(timeout=120)
 
-            # Confirmar e-mail
             await page.goto(link_confirmacao, wait_until="networkidle")
-            await asyncio.sleep(random.uniform(2, 3))
-            print(f"  ✓ E-mail confirmado!")
+            await asyncio.sleep(3)
+            print(f"  EMAIL_CONFIRMADO", flush=True)
 
-            # Login
             registrar_conta(campanha_id, numero, usuario, email, "", "logando")
             await page.goto(GGMAX_URL, wait_until="networkidle")
-            await asyncio.sleep(random.uniform(1.5, 2.5))
+            await asyncio.sleep(2)
 
             await clicar_menu(page)
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            await asyncio.sleep(1)
 
             await page.click("text=Entrar", timeout=8000)
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            await asyncio.sleep(1)
 
-            await page.click("input[placeholder='Usuário ou e-mail']")
-            await asyncio.sleep(0.3)
-            for char in usuario:
-                await page.type("input[placeholder='Usuário ou e-mail']", char, delay=random.randint(60, 140))
-
-            await page.click("input[placeholder='Senha']")
-            await asyncio.sleep(0.3)
-            for char in senha:
-                await page.type("input[placeholder='Senha']", char, delay=random.randint(60, 140))
-
+            await page.fill("input[placeholder='Usuário ou e-mail']", usuario)
             await asyncio.sleep(0.5)
-            await page.click("button:has-text('ENTRAR')")
-            await asyncio.sleep(random.uniform(2, 3))
-            print(f"  ✓ Login realizado")
+            await page.fill("input[placeholder='Senha']", senha)
+            await asyncio.sleep(0.5)
 
-            # Navegar para anúncio e perguntar
+            await page.click("button:has-text('ENTRAR')")
+            await asyncio.sleep(3)
+            print(f"  LOGIN_REALIZADO", flush=True)
+
             pergunta = gerar_pergunta(titulo, tom)
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "perguntando")
+            print(f"  PERGUNTA: {pergunta}", flush=True)
 
             await page.goto(url_anuncio, wait_until="networkidle")
-            await asyncio.sleep(random.uniform(2, 4))
+            await asyncio.sleep(3)
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.7)")
-            await asyncio.sleep(random.uniform(1, 2))
+            await asyncio.sleep(2)
 
             campo = await page.query_selector(
                 "textarea[placeholder*='pergunta'], textarea[placeholder*='Pergunta'], textarea[placeholder*='Digite']"
@@ -380,20 +364,16 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
             if not campo:
                 raise Exception("Campo de pergunta não encontrado")
 
-            await campo.click()
-            await asyncio.sleep(0.5)
-            for char in pergunta:
-                await campo.type(char, delay=random.randint(40, 100))
-            await asyncio.sleep(random.uniform(1, 2))
-
+            await campo.fill(pergunta)
+            await asyncio.sleep(1.5)
             await page.click("button:has-text('Perguntar')")
-            await asyncio.sleep(random.uniform(2, 3))
+            await asyncio.sleep(3)
 
             registrar_conta(campanha_id, numero, usuario, email, pergunta, "concluido")
-            print(f"  ✓ [{numero}/{total}] CONCLUÍDO!")
+            print(f"  CONCLUIDO [{numero}/{total}]", flush=True)
 
         except Exception as e:
-            print(f"  ✗ [{numero}/{total}] ERRO: {e}")
+            print(f"  ERRO [{numero}/{total}]: {e}", flush=True)
             registrar_conta(campanha_id, numero, usuario, email or "", pergunta or "", "erro", str(e))
         finally:
             await browser.close()
