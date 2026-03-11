@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
@@ -18,6 +20,6 @@ RUN playwright install chromium
 COPY server.py /app/server.py
 COPY index.html /app/index.html
 
-EXPOSE 5000
+EXPOSE 8080
 
-CMD ["python", "/app/server.py"]
+CMD ["python", "-u", "/app/server.py"]
