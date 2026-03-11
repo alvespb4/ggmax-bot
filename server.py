@@ -75,11 +75,8 @@ def atualizar_campanha(campanha_id, status):
 
 
 def gerar_usuario():
-    nomes = ["miguel", "carlos", "gabriel", "lucas", "pedro", "joao", "andre",
-             "rafael", "mateus", "felipe", "thiago", "rodrigo", "bruno", "victor"]
-    sobrenomes = ["silva", "santos", "oliveira", "souza", "lima", "costa",
-                  "ferreira", "alves", "pereira", "gomes", "martins"]
-    return random.choice(nomes) + random.choice(sobrenomes) + str(random.randint(100, 9999))
+    nomes = ["miguel", "carlos", "gabriel", "lucas", "pedro", "joao", "andre", "rafael"]
+    return random.choice(nomes) + str(random.randint(10, 999))
 
 
 def gerar_senha():
