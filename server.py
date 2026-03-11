@@ -218,7 +218,7 @@ async def aguardar_site_carregar(page, timeout=45):
         print(f"  CHECANDO: title='{title}'", flush=True)
 
         # Cloudflare ainda rodando
-        if "um momento" in title.lower() or "just a moment" in title.lower():
+        if "momento" in title.lower() or "moment" in title.lower() or title.strip() == "":
             print("  CLOUDFLARE_ATIVO, aguardando 4s...", flush=True)
             await asyncio.sleep(4)
             continue
