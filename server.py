@@ -84,6 +84,8 @@ def gerar_senha():
     return random.choice(nomes) + random.choice(["@", "#"]) + str(random.randint(10, 9999))
 
 
+DEVICE_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJkZXZpY2VJZCI6IjY2MDgxMTE0LTg4MDAtNGRhMi1iNGYwLWUxZjk1OTM4MTg3YiIsImlwIjoiMTg5Ljg5LjE0LjY2Iiwic2NvcGUiOlsiZGV2aWNlLXJlY29nbml0aW9uIl0sInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChXaW5kb3dzIE5UIDEwLjA7IFdpbjY0OyB4NjQpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xNDUuMC4wLjAgU2FmYXJpLzUzNy4zNiIsImlhdCI6MTc3MzI1MzkxNSwiZXhwIjoxNzc4NDM3OTE1fQ.NDb1asN-QR2tjmeRx8_l0dMvWFnadLMe13RRw_MwgmM"
+
 def headers_ggmax(token=None):
     h = {
         "Accept": "application/json",
@@ -97,6 +99,7 @@ def headers_ggmax(token=None):
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
+        "x-gg-device": DEVICE_TOKEN,
     }
     if token:
         h["Authorization"] = f"Bearer {token}"
