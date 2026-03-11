@@ -254,11 +254,20 @@ async def processar_conta(campanha_id, url_anuncio, titulo, tom, numero, total):
 
         try:
             registrar_conta(campanha_id, numero, usuario, email, "", "cadastrando")
-            await page.goto(GGMAX_URL, wait_until="networkidle")
-            await asyncio.sleep(random.uniform(1.5, 2.5))
+await page.goto(GGMAX_URL, wait_until="networkidle")
+await asyncio.sleep(random.uniform(1.5, 2.5))
 
-            # Clicar menu hamburguer
-            await clicar_menu(page)
+# DEBUG: salvar HTML e screenshot
+html_content = await page.content()
+print(f"  [DEBUG] Botões encontrados:")
+buttons = await page.query_selector_all("button")
+for btn in buttons:
+    txt = await btn.inner_text()
+    cls = await btn.get_attribute("class") or ""
+    print(f"    btn: '{txt[:30]}' class='{cls[:50]}'")
+
+# Clicar menu hamburguer
+await clicar_menu(page)
             await asyncio.sleep(random.uniform(0.8, 1.5))
 
             # Clicar em Entrar
