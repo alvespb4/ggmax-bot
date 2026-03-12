@@ -87,74 +87,105 @@ def extrair_slug(url):
 
 # ─── 2captcha Cloudflare Turnstile ──────────────────────────────────────────
 
-def obter_params_cloudflare(url_pagina):
-    """Busca os parâmetros do Cloudflare Challenge fazendo request direto"""
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-    resp = requests.get(url_pagina, headers={"User-Agent": ua}, timeout=30, allow_redirects=True)
-    html = resp.text
-    
-    import re
-    cdata  = re.search(r"cH:\s*'([^']+)'", html)
-    pagedata = re.search(r"cUPMDTk:\s*"([^"]+)"", html)
-    sitekey_match = re.search(r"cZone:\s*'([^']+)'", html)
-    
-    params = {
-        "cData": cdata.group(1) if cdata else "",
-        "chlPageData": pagedata.group(1) if pagedata else "",
-    }
-    print(f"  CF_PARAMS: cData={params['cData'][:30]}... chlPageData={params['chlPageData'][:30]}...", flush=True)
-    return params
+def resolver_cloudflare_challenge(url_pagina):
+    """Usa Playwright para interceptar params do Cloudflare e resolve via 2captcha"""
+    from playwright.sync_api import sync_playwright
+    import json as json_lib
 
+    print(f"  CF_PLAYWRIGHT_INICIANDO...", flush=True)
 
-def resolver_turnstile(url_pagina):
-    """Resolve Cloudflare Challenge via 2captcha TurnstileTaskProxyless"""
-    print(f"  CAPTCHA_SOLICITANDO para {url_pagina}...", flush=True)
-    
-    # Busca parâmetros do challenge
-    cf_params = obter_params_cloudflare(url_pagina)
-    
-    task = {
-        "type": "TurnstileTaskProxyless",
-        "websiteURL": url_pagina,
-        "websiteKey": "0x4AAAAAAABkMYinukE8nkZQ",
-        "action": "managed",
-    }
-    if cf_params["cData"]:
-        task["data"] = cf_params["cData"]
-    if cf_params["chlPageData"]:
-        task["pagedata"] = cf_params["chlPageData"]
+    inject_js = """
+        console.clear = () => console.log('Console was cleared');
+        const i = setInterval(() => {
+            if (window.turnstile) {
+                clearInterval(i);
+                window.turnstile.render = (a, b) => {
+                    let params = {
+                        sitekey: b.sitekey,
+                        pageurl: window.location.href,
+                        data: b.cData,
+                        pagedata: b.chlPageData,
+                        action: b.action,
+                        userAgent: navigator.userAgent,
+                        json: 1
+                    };
+                    console.log('intercepted-params:' + JSON.stringify(params));
+                    window.cfCallback = b.callback;
+                    return 'foo';
+                };
+            }
+        }, 50);
+    """
 
-    resp = requests.post("https://api.2captcha.com/createTask", json={
-        "clientKey": CAPTCHA_KEY,
-        "task": task
+    params = None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=[
+            '--no-sandbox', '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+        ])
+        page = browser.new_page()
+        page.add_init_script(inject_js)
+
+        msgs = []
+        page.on("console", lambda msg: msgs.append(msg.text))
+
+        print(f"  CF_NAVEGANDO para {url_pagina}...", flush=True)
+        try:
+            page.goto(url_pagina, timeout=30000, wait_until="domcontentloaded")
+        except Exception:
+            pass
+        page.wait_for_timeout(8000)
+
+        for msg in msgs:
+            if 'intercepted-params:' in msg:
+                raw = msg.replace('intercepted-params:', '').strip()
+                params = json_lib.loads(raw)
+                print(f"  CF_PARAMS_INTERCEPTADOS: sitekey={params.get('sitekey','?')}", flush=True)
+                break
+
+        browser.close()
+
+    if not params:
+        raise Exception("Não conseguiu interceptar params do Cloudflare")
+
+    # Envia para 2captcha API antiga (in.php)
+    print(f"  CAPTCHA_ENVIANDO_2CAPTCHA...", flush=True)
+    r = requests.post("https://2captcha.com/in.php", data={
+        "key": CAPTCHA_KEY,
+        "method": "turnstile",
+        "sitekey": params.get("sitekey", ""),
+        "pageurl": url_pagina,
+        "data": params.get("data", ""),
+        "pagedata": params.get("pagedata", ""),
+        "action": params.get("action", "managed"),
+        "userAgent": params.get("userAgent", ""),
+        "json": 1,
     }, timeout=30)
-    
-    data = resp.json()
-    print(f"  CAPTCHA_TASK: {data}", flush=True)
-    
-    if data.get("errorId", 1) != 0:
-        raise Exception(f"2captcha erro: {data.get('errorDescription')}")
-    
-    task_id = data["taskId"]
-    
-    # Aguarda resultado (até 120s)
-    for _ in range(24):
+
+    resp_data = r.json()
+    print(f"  CAPTCHA_TASK: {resp_data}", flush=True)
+
+    if resp_data.get("status") != 1:
+        raise Exception(f"2captcha erro: {resp_data}")
+
+    task_id = resp_data["request"]
+
+    # Aguarda resultado
+    for _ in range(36):
         time.sleep(5)
-        r = requests.post("https://api.2captcha.com/getTaskResult", json={
-            "clientKey": CAPTCHA_KEY,
-            "taskId": task_id
-        }, timeout=30)
+        r = requests.get(f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1", timeout=30)
         result = r.json()
-        print(f"  CAPTCHA_STATUS: {result.get('status')}", flush=True)
-        
-        if result.get("status") == "ready":
-            solution = result["solution"]
-            print(f"  CAPTCHA_SOLUTION: {str(solution)[:100]}", flush=True)
-            # AntiCloudflareTask retorna cf_clearance como cookie
-            cf_clearance = solution.get("cf_clearance") or solution.get("token") or str(solution)
-            return cf_clearance
-    
+        print(f"  CAPTCHA_STATUS: {result.get('request','?')[:30]}", flush=True)
+        if result.get("status") == 1:
+            token = result["request"]
+            ua = result.get("useragent", params.get("userAgent", ""))
+            print(f"  CAPTCHA_TOKEN_OK!", flush=True)
+            return token, ua
+        if result.get("request") not in ("CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"):
+            raise Exception(f"2captcha erro resultado: {result}")
+
     raise Exception("Timeout resolvendo captcha")
+
 
 
 def obter_device_token(cf_token):
@@ -287,8 +318,8 @@ def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
     try:
         registrar_conta(cid, numero, usuario, email, "", "resolvendo_captcha")
 
-        # 1. Resolver Cloudflare Turnstile
-        cf_token = resolver_turnstile(GGMAX_URL)
+        # 1. Resolver Cloudflare com Playwright + 2captcha
+        cf_token, cf_useragent = resolver_cloudflare_challenge(GGMAX_URL)
 
         # 2. Obter device token
         registrar_conta(cid, numero, usuario, email, "", "obtendo_device")
