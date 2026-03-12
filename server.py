@@ -87,19 +87,46 @@ def extrair_slug(url):
 
 # ─── 2captcha Cloudflare Turnstile ──────────────────────────────────────────
 
+def obter_params_cloudflare(url_pagina):
+    """Busca os parâmetros do Cloudflare Challenge fazendo request direto"""
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    resp = requests.get(url_pagina, headers={"User-Agent": ua}, timeout=30, allow_redirects=True)
+    html = resp.text
+    
+    import re
+    cdata  = re.search(r"cH:\s*'([^']+)'", html)
+    pagedata = re.search(r"cUPMDTk:\s*"([^"]+)"", html)
+    sitekey_match = re.search(r"cZone:\s*'([^']+)'", html)
+    
+    params = {
+        "cData": cdata.group(1) if cdata else "",
+        "chlPageData": pagedata.group(1) if pagedata else "",
+    }
+    print(f"  CF_PARAMS: cData={params['cData'][:30]}... chlPageData={params['chlPageData'][:30]}...", flush=True)
+    return params
+
+
 def resolver_turnstile(url_pagina):
-    """Resolve Cloudflare Turnstile via 2captcha e retorna cf_clearance + token"""
+    """Resolve Cloudflare Challenge via 2captcha TurnstileTaskProxyless"""
     print(f"  CAPTCHA_SOLICITANDO para {url_pagina}...", flush=True)
     
-    # Submete tarefa
+    # Busca parâmetros do challenge
+    cf_params = obter_params_cloudflare(url_pagina)
+    
+    task = {
+        "type": "TurnstileTaskProxyless",
+        "websiteURL": url_pagina,
+        "websiteKey": "0x4AAAAAAABkMYinukE8nkZQ",
+        "action": "managed",
+    }
+    if cf_params["cData"]:
+        task["data"] = cf_params["cData"]
+    if cf_params["chlPageData"]:
+        task["pagedata"] = cf_params["chlPageData"]
+
     resp = requests.post("https://api.2captcha.com/createTask", json={
         "clientKey": CAPTCHA_KEY,
-        "task": {
-            "type": "AntiCloudflareTask",
-            "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-            "websiteURL": url_pagina,
-
-        }
+        "task": task
     }, timeout=30)
     
     data = resp.json()
