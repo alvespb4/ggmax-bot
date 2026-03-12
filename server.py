@@ -95,9 +95,10 @@ def resolver_turnstile(url_pagina):
     resp = requests.post("https://api.2captcha.com/createTask", json={
         "clientKey": CAPTCHA_KEY,
         "task": {
-            "type": "TurnstileTaskProxyless",
+            "type": "AntiCloudflareTask",
+            "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
             "websiteURL": url_pagina,
-            "websiteKey": "0x4AAAAAAABkMYinukE8nkZQ",  # sitekey público do CF Turnstile GGMAX
+
         }
     }, timeout=30)
     
@@ -120,9 +121,11 @@ def resolver_turnstile(url_pagina):
         print(f"  CAPTCHA_STATUS: {result.get('status')}", flush=True)
         
         if result.get("status") == "ready":
-            token = result["solution"]["token"]
-            print(f"  CAPTCHA_TOKEN: {token[:30]}...", flush=True)
-            return token
+            solution = result["solution"]
+            print(f"  CAPTCHA_SOLUTION: {str(solution)[:100]}", flush=True)
+            # AntiCloudflareTask retorna cf_clearance como cookie
+            cf_clearance = solution.get("cf_clearance") or solution.get("token") or str(solution)
+            return cf_clearance
     
     raise Exception("Timeout resolvendo captcha")
 
