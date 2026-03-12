@@ -189,46 +189,72 @@ def resolver_cloudflare_challenge(url_pagina):
 
 
 def obter_device_token(cf_token):
-    """Usa o cf token para obter o x-gg-device da GGMAX"""
-    sess = requests.Session()
-    
-    # Primeiro acessa a página com o token do turnstile
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Origin": GGMAX_URL,
-        "Referer": GGMAX_URL + "/",
-    }
-    
-    # Tenta obter device token via endpoint da GGMAX
-    resp = sess.post(f"{GGMAX_API}/device", 
-        json={"cfToken": cf_token},
-        headers=headers,
-        timeout=30
-    )
-    print(f"  DEVICE_STATUS: {resp.status_code} | {resp.text[:200]}", flush=True)
-    
-    if resp.status_code == 200:
-        data = resp.json()
-        token = data.get("token") or data.get("deviceToken") or data.get("x-gg-device")
-        if token:
-            return token, sess.cookies
-    
-    # Tenta endpoint alternativo
-    resp2 = sess.get(f"{GGMAX_API}/device-token",
-        headers={**headers, "cf-turnstile-response": cf_token},
-        timeout=30
-    )
-    print(f"  DEVICE2_STATUS: {resp2.status_code} | {resp2.text[:200]}", flush=True)
-    
-    if resp2.status_code == 200:
-        data = resp2.json()
-        token = data.get("token") or data.get("deviceToken")
-        if token:
-            return token, sess.cookies
-    
-    raise Exception(f"Não obteve device token: {resp.status_code} {resp.text[:100]}")
+    """Usa Playwright para interceptar o x-gg-device gerado pelo JS da GGMAX"""
+    from playwright.sync_api import sync_playwright
+
+    print(f"  DEVICE_PLAYWRIGHT_INICIANDO...", flush=True)
+    device_token = None
+    cookies_dict = {}
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=[
+            "--no-sandbox", "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ])
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+        )
+
+        # Injeta o cf_clearance como cookie antes de navegar
+        context.add_cookies([{
+            "name": "cf_clearance",
+            "value": cf_token,
+            "domain": "ggmax.com.br",
+            "path": "/",
+        }])
+
+        page = context.new_page()
+
+        # Intercepta requisições para capturar x-gg-device
+        captured = {}
+        def on_request(req):
+            gg = req.headers.get("x-gg-device")
+            if gg and not captured.get("token"):
+                captured["token"] = gg
+                print(f"  DEVICE_INTERCEPTADO: {gg[:30]}...", flush=True)
+
+        page.on("request", on_request)
+
+        try:
+            page.goto(GGMAX_URL, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(5000)
+
+            # Tenta abrir formulário de cadastro para forçar geração do token
+            if not captured.get("token"):
+                try:
+                    page.click("text=Entrar", timeout=5000)
+                    page.wait_for_timeout(2000)
+                    page.click("text=Criar uma conta", timeout=5000)
+                    page.wait_for_timeout(3000)
+                except:
+                    pass
+
+            # Aguarda mais um pouco
+            page.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"  DEVICE_NAV_ERRO: {e}", flush=True)
+
+        # Captura cookies da sessão
+        for c in context.cookies():
+            cookies_dict[c["name"]] = c["value"]
+
+        device_token = captured.get("token")
+        browser.close()
+
+    if not device_token:
+        raise Exception("Não conseguiu interceptar x-gg-device via Playwright")
+
+    return device_token, cookies_dict
 
 
 def headers_ggmax(device_token, auth_token=None):
