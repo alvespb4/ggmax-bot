@@ -23,18 +23,14 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 campanhas_status = {}
 
 
-# ─── helpers ────────────────────────────────────────────────────────────────
-
 def registrar_conta_local(cid, num, user, email, perg, status, erro=""):
     campanhas_status.setdefault(cid, {"contas": [], "campanha_status": "ativa"})
     contas = campanhas_status[cid]["contas"]
     obj = next((c for c in contas if c["numero"] == num), None)
     if obj:
-        obj.update({"usuario": user, "email": email, "pergunta": perg,
-                    "status": status, "erro": erro})
+        obj.update({"usuario": user, "email": email, "pergunta": perg, "status": status, "erro": erro})
     else:
-        contas.append({"numero": num, "usuario": user, "email": email,
-                       "pergunta": perg, "status": status, "erro": erro})
+        contas.append({"numero": num, "usuario": user, "email": email, "pergunta": perg, "status": status, "erro": erro})
 
 def registrar_conta(cid, num, user, email, perg, status, erro=""):
     registrar_conta_local(cid, num, user, email, perg, status, erro)
@@ -85,34 +81,59 @@ def extrair_slug(url):
     return m.group(1) if m else None
 
 
-# ─── 2captcha Cloudflare Turnstile ──────────────────────────────────────────
-
 def obter_cf_e_device(url_pagina):
-    """Abre GGMAX uma única vez, resolve Cloudflare via 2captcha e intercepta x-gg-device"""
+    """Resolve Cloudflare via 2captcha e captura x-gg-device do storage/requests"""
     from playwright.sync_api import sync_playwright
     import json as json_lib
 
-    print(f"  PLAYWRIGHT_INICIANDO sessão unificada...", flush=True)
+    print("  PLAYWRIGHT_START...", flush=True)
 
+    # JS que intercepta o turnstile E captura o device token do storage
     inject_js = """
-        const i = setInterval(() => {
+        // Intercepta turnstile
+        const _ti = setInterval(() => {
             if (window.turnstile) {
-                clearInterval(i);
+                clearInterval(_ti);
                 window.turnstile.render = (a, b) => {
-                    let params = {
+                    window.__cf_params = {
                         sitekey: b.sitekey,
-                        pageurl: window.location.href,
                         data: b.cData,
                         pagedata: b.chlPageData,
                         action: b.action,
                         userAgent: navigator.userAgent,
                     };
-                    console.log('intercepted-params:' + JSON.stringify(params));
-                    window.cfCallback = b.callback;
+                    console.log('CF_PARAMS:' + JSON.stringify(window.__cf_params));
+                    window.__cf_callback = b.callback;
                     return 'foo';
                 };
             }
         }, 50);
+
+        // Intercepta XMLHttpRequest para capturar x-gg-device
+        const _origOpen = XMLHttpRequest.prototype.open;
+        const _origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            if (name && name.toLowerCase() === 'x-gg-device') {
+                console.log('XHR_DEVICE:' + value);
+                window.__gg_device = value;
+            }
+            return _origSetHeader.apply(this, arguments);
+        };
+
+        // Intercepta fetch para capturar x-gg-device
+        const _origFetch = window.fetch;
+        window.fetch = function(url, opts) {
+            if (opts && opts.headers) {
+                const h = opts.headers;
+                const dev = (h instanceof Headers) ? h.get('x-gg-device') :
+                            (typeof h === 'object' ? (h['x-gg-device'] || h['X-Gg-Device']) : null);
+                if (dev) {
+                    console.log('FETCH_DEVICE:' + dev);
+                    window.__gg_device = dev;
+                }
+            }
+            return _origFetch.apply(this, arguments);
+        };
     """
 
     device_token = None
@@ -129,151 +150,119 @@ def obter_cf_e_device(url_pagina):
         page = context.new_page()
         page.add_init_script(inject_js)
 
-        # Intercepta x-gg-device em QUALQUER requisição do contexto (persiste após reload)
+        # Captura via console (fetch/XHR interceptado no JS)
         captured = {}
-        def on_request(req):
-            url = req.url
-            gg = req.headers.get("x-gg-device")
-            # Loga todas requisições para ggmax.com.br
-            if "ggmax.com.br" in url and "/api/" in url:
-                print(f"  REQ: {url[-60:]} | device={'SIM' if gg else 'NAO'}", flush=True)
-            if gg and not captured.get("device"):
-                captured["device"] = gg
-                print(f"  DEVICE_INTERCEPTADO!", flush=True)
-        context.on("request", on_request)
-
-        # Captura params do turnstile via console
-        cf_params = {}
         def on_console(msg):
-            if 'intercepted-params:' in msg.text:
-                raw = msg.text.replace('intercepted-params:', '').strip()
+            t = msg.text
+            if t.startswith('CF_PARAMS:'):
                 try:
-                    cf_params.update(json_lib.loads(raw))
-                    print(f"  CF_PARAMS: sitekey={cf_params.get('sitekey','?')}", flush=True)
+                    captured['cf'] = json_lib.loads(t[10:])
+                    print(f"  CF_PARAMS OK: sitekey={captured['cf'].get('sitekey','?')}", flush=True)
                 except: pass
+            elif t.startswith('FETCH_DEVICE:') or t.startswith('XHR_DEVICE:'):
+                dev = t.split(':', 1)[1]
+                if dev and not captured.get('device'):
+                    captured['device'] = dev
+                    print(f"  DEVICE_VIA_JS!", flush=True)
         page.on("console", on_console)
 
-        # 1. Navega para GGMAX
-        print(f"  NAVEGANDO...", flush=True)
+        # Também intercepta via Playwright (backup)
+        def on_request(req):
+            gg = req.headers.get("x-gg-device")
+            if gg and not captured.get('device'):
+                captured['device'] = gg
+                print(f"  DEVICE_VIA_PW!", flush=True)
+        context.on("request", on_request)
+
+        # 1. Navega
+        print("  NAVEGANDO...", flush=True)
         try:
             page.goto(url_pagina, timeout=30000, wait_until="domcontentloaded")
         except: pass
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(6000)
 
-        # 2. Se interceptou params do CF, resolve via 2captcha
-        if cf_params.get("sitekey"):
-            print(f"  ENVIANDO_2CAPTCHA...", flush=True)
+        # 2. Resolve CF Turnstile
+        if captured.get('cf', {}).get('sitekey'):
+            cf = captured['cf']
+            print("  ENVIANDO_2CAPTCHA...", flush=True)
             r = requests.post("https://2captcha.com/in.php", data={
-                "key": CAPTCHA_KEY,
-                "method": "turnstile",
-                "sitekey": cf_params.get("sitekey", ""),
-                "pageurl": url_pagina,
-                "data": cf_params.get("data", ""),
-                "pagedata": cf_params.get("pagedata", ""),
-                "action": cf_params.get("action", "managed"),
-                "userAgent": cf_params.get("userAgent", ""),
-                "json": 1,
+                "key": CAPTCHA_KEY, "method": "turnstile",
+                "sitekey": cf.get("sitekey",""), "pageurl": url_pagina,
+                "data": cf.get("data","") or "", "pagedata": cf.get("pagedata","") or "",
+                "action": cf.get("action","managed"),
+                "userAgent": cf.get("userAgent",""), "json": 1,
             }, timeout=30)
-            resp_data = r.json()
-            print(f"  CAPTCHA_TASK: {resp_data}", flush=True)
+            rd = r.json()
+            print(f"  TASK: {rd}", flush=True)
 
-            if resp_data.get("status") == 1:
-                task_id = resp_data["request"]
-                # Aguarda token
+            if rd.get("status") == 1:
+                task_id = rd["request"]
                 cf_token = None
                 for _ in range(36):
                     time.sleep(5)
-                    r2 = requests.get(f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1", timeout=30)
-                    result = r2.json()
-                    status_msg = result.get("request", "")
-                    print(f"  CAPTCHA_STATUS: {str(status_msg)[:40]}", flush=True)
-                    if result.get("status") == 1:
-                        cf_token = result["request"]
+                    r2 = requests.get(
+                        f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1",
+                        timeout=30)
+                    res = r2.json()
+                    msg = res.get("request","")
+                    print(f"  CF_STATUS: {str(msg)[:40]}", flush=True)
+                    if res.get("status") == 1:
+                        cf_token = msg
                         break
-                    if status_msg not in ("CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"):
+                    if msg not in ("CAPCHA_NOT_READY","CAPTCHA_NOT_READY"):
                         break
 
                 if cf_token:
-                    print(f"  CAPTCHA_OK! Injetando token...", flush=True)
-                    # Injeta o token via JS para completar o challenge
-                    page.evaluate(f"if(window.cfCallback) window.cfCallback('{cf_token}')")
-                    # Aguarda o site recarregar após passar o challenge
+                    print("  CAPTCHA_OK! Injetando...", flush=True)
+                    page.evaluate(f"if(window.__cf_callback) window.__cf_callback('{cf_token}')")
                     try:
                         page.wait_for_load_state("domcontentloaded", timeout=15000)
                     except: pass
-                    page.wait_for_timeout(5000)
+                    page.wait_for_timeout(6000)
 
-        # 3. Listener já está no context — persiste após reload automaticamente
-
-        # 4. Tenta navegar direto para a página principal se ainda no challenge
+        # 3. Verifica título
         title = page.title()
-        print(f"  PAGE_TITLE: {title}", flush=True)
-        if "moment" in title.lower() or "just a" in title.lower():
+        print(f"  TITLE: {title[:60]}", flush=True)
+
+        # 4. Tenta extrair device do storage JS
+        if not captured.get('device'):
             try:
-                page.goto(url_pagina, timeout=20000, wait_until="domcontentloaded")
-                page.wait_for_timeout(5000)
+                dev = page.evaluate("window.__gg_device || localStorage.getItem('deviceToken') || localStorage.getItem('device') || sessionStorage.getItem('deviceToken') || null")
+                if dev:
+                    captured['device'] = dev
+                    print(f"  DEVICE_VIA_STORAGE!", flush=True)
             except: pass
 
-        # 5. Força várias requisições à API via JS
-        if not captured.get("device"):
-            print("  FORCANDO_REQUISICOES_API...", flush=True)
+        # 5. Aguarda requisições naturais do site (home page faz várias)
+        if not captured.get('device'):
+            page.wait_for_timeout(8000)
+
+        # 6. Tenta extrair novamente do storage
+        if not captured.get('device'):
             try:
-                page.evaluate("""
-                    // Tenta várias rotas que o site usa normalmente
-                    fetch('/api/announcements?limit=12&filter=type&type=diamond&v=2').catch(()=>{});
-                    fetch('/api/categories').catch(()=>{});
-                    fetch('/api/me').catch(()=>{});
-                """)
-                page.wait_for_timeout(4000)
+                dev = page.evaluate("window.__gg_device")
+                if dev:
+                    captured['device'] = dev
+                    print(f"  DEVICE_VIA_WINDOW!", flush=True)
             except: pass
 
-        # 6. Scroll para forçar carregamento lazy
-        if not captured.get("device"):
+        # 7. Loga todas as keys do localStorage para debug
+        if not captured.get('device'):
             try:
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(2000)
-                page.evaluate("window.scrollTo(0, 0)")
-                page.wait_for_timeout(2000)
+                keys = page.evaluate("Object.keys(localStorage)")
+                print(f"  LOCALSTORAGE_KEYS: {keys}", flush=True)
             except: pass
 
-        # 7. Tenta abrir o formulário de cadastro
-        if not captured.get("device"):
-            print("  TENTANDO_ABRIR_CADASTRO...", flush=True)
-            try:
-                # Tenta clicar nas 3 barras do menu
-                for sel in ["button.hamburger", "[class*='hamburger']", "[class*='MenuButton']", "button[aria-label]", "nav button"]:
-                    try:
-                        page.click(sel, timeout=2000)
-                        page.wait_for_timeout(1000)
-                        break
-                    except: pass
-            except: pass
-            try:
-                page.click("text=Entrar", timeout=3000)
-                page.wait_for_timeout(1000)
-                page.click("text=Criar uma conta", timeout=3000)
-                page.wait_for_timeout(3000)
-            except: pass
-
-        # 8. Aguarda mais tempo para qualquer request pendente
-        if not captured.get("device"):
-            page.wait_for_timeout(5000)
-
-        # Captura cookies finais
+        # Cookies finais
         for c in context.cookies():
             cookies_dict[c["name"]] = c["value"]
-        device_token = captured.get("device")
+        device_token = captured.get('device')
         browser.close()
 
     if not device_token:
-        raise Exception("Não conseguiu interceptar x-gg-device")
+        raise Exception("Não conseguiu capturar x-gg-device")
 
     return device_token, cookies_dict
-
-
-def resolver_cloudflare_challenge(url_pagina):
-    """Wrapper — chama obter_cf_e_device"""
-    return obter_cf_e_device(url_pagina)
 
 
 def headers_ggmax(device_token, auth_token=None):
@@ -296,8 +285,6 @@ def headers_ggmax(device_token, auth_token=None):
     return h
 
 
-# ─── Mail.tm ─────────────────────────────────────────────────────────────────
-
 class MailTM:
     def __init__(self):
         self.email = self.senha = self.token = None
@@ -308,16 +295,14 @@ class MailTM:
         u = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
         self.email = f"{u}@{dom}"
         self.senha = gerar_senha()
-        r = requests.post(f"{MAILTM_API}/accounts",
-                          json={"address":self.email,"password":self.senha})
+        r = requests.post(f"{MAILTM_API}/accounts", json={"address":self.email,"password":self.senha})
         if r.status_code not in (200,201):
             raise Exception(f"Erro criar email: {r.text}")
         print(f"  EMAIL_CRIADO: {self.email}", flush=True)
         return self.email
 
     def autenticar(self):
-        r = requests.post(f"{MAILTM_API}/token",
-                          json={"address":self.email,"password":self.senha})
+        r = requests.post(f"{MAILTM_API}/token", json={"address":self.email,"password":self.senha})
         self.token = r.json().get("token")
 
     def aguardar_link(self, timeout=120):
@@ -326,24 +311,20 @@ class MailTM:
         inicio = time.time()
         print("  AGUARDANDO_EMAIL...", flush=True)
         while time.time() - inicio < timeout:
-            msgs = requests.get(f"{MAILTM_API}/messages",
-                                headers=headers).json().get("hydra:member",[])
+            msgs = requests.get(f"{MAILTM_API}/messages", headers=headers).json().get("hydra:member",[])
             for msg in msgs:
                 assunto = msg.get("subject","").lower()
                 remetente = msg.get("from",{}).get("address","").lower()
                 if "ggmax" in remetente or any(w in assunto for w in ["verific","confirm","ativ"]):
-                    det = requests.get(f"{MAILTM_API}/messages/{msg['id']}",
-                                       headers=headers).json()
+                    det = requests.get(f"{MAILTM_API}/messages/{msg['id']}", headers=headers).json()
                     conteudo = (det.get("html") or "") + (det.get("text") or "")
                     links = re.findall(r'https?://[^\s"<>]+ggmax[^\s"<>]+', conteudo)
-                    if links: 
+                    if links:
                         print(f"  LINK: {links[0]}", flush=True)
                         return links[0].strip()
             time.sleep(5)
         raise Exception("Timeout: e-mail não chegou")
 
-
-# ─── Fluxo principal ─────────────────────────────────────────────────────────
 
 def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
     usuario = gerar_usuario()
@@ -361,54 +342,37 @@ def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
         return
 
     try:
-        registrar_conta(cid, numero, usuario, email, "", "resolvendo_captcha")
-
-        # 1. Resolver Cloudflare + interceptar device token (sessão unificada)
         registrar_conta(cid, numero, usuario, email, "", "resolvendo_cloudflare")
         device_token, cookies = obter_cf_e_device(GGMAX_URL)
-        print(f"  DEVICE_OK: {device_token[:30]}...", flush=True)
+        print(f"  DEVICE_OK!", flush=True)
 
-        # 3. Registrar conta
         registrar_conta(cid, numero, usuario, email, "", "cadastrando")
-        print(f"  REGISTRANDO...", flush=True)
         r = requests.post(f"{GGMAX_API}/register",
-            json={"username":usuario,"email":email,
-                  "password":senha,"confirmPassword":senha},
-            headers=headers_ggmax(device_token),
-            cookies=cookies,
-            timeout=30)
+            json={"username":usuario,"email":email,"password":senha,"confirmPassword":senha},
+            headers=headers_ggmax(device_token), cookies=cookies, timeout=30)
         print(f"  REGISTER: {r.status_code} | {r.text[:200]}", flush=True)
         if r.status_code not in (200,201):
             raise Exception(f"Registro: {r.status_code} {r.text[:100]}")
 
-        # 4. Confirmação de e-mail
         registrar_conta(cid, numero, usuario, email, "", "verificando")
         link = mailtm.aguardar_link(120)
-        requests.get(link, headers=headers_ggmax(device_token),
-                     allow_redirects=True, timeout=30)
+        requests.get(link, headers=headers_ggmax(device_token), allow_redirects=True, timeout=30)
         time.sleep(2)
 
-        # 5. Login
         registrar_conta(cid, numero, usuario, email, "", "logando")
         r = requests.post(f"{GGMAX_API}/auth",
-            json={"username":usuario,"password":senha,
-                  "googleAccessToken":"","code":None,"validation":None},
-            headers=headers_ggmax(device_token),
-            cookies=cookies,
-            timeout=30)
+            json={"username":usuario,"password":senha,"googleAccessToken":"","code":None,"validation":None},
+            headers=headers_ggmax(device_token), cookies=cookies, timeout=30)
         print(f"  LOGIN: {r.status_code} | {r.text[:200]}", flush=True)
         if r.status_code not in (200,201):
             raise Exception(f"Login: {r.status_code} {r.text[:100]}")
 
         login_data = r.json()
-        auth_token = (login_data.get("token") or
-                      login_data.get("access_token") or
-                      login_data.get("accessToken"))
+        auth_token = login_data.get("token") or login_data.get("access_token") or login_data.get("accessToken")
         if not auth_token:
             raise Exception(f"Token não encontrado: {str(login_data)[:200]}")
-        print(f"  LOGIN_OK", flush=True)
+        print("  LOGIN_OK", flush=True)
 
-        # 6. Pergunta
         pergunta = gerar_pergunta(titulo, tom)
         registrar_conta(cid, numero, usuario, email, pergunta, "perguntando")
         slug = extrair_slug(url_anuncio)
@@ -417,8 +381,7 @@ def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
         r = requests.post(f"{GGMAX_API}/listings/{slug}/questions",
             json={"question": pergunta},
             headers=headers_ggmax(device_token, auth_token=auth_token),
-            cookies=cookies,
-            timeout=30)
+            cookies=cookies, timeout=30)
         print(f"  PERGUNTA_STATUS: {r.status_code} | {r.text[:200]}", flush=True)
 
         if r.status_code in (200,201):
@@ -441,8 +404,6 @@ def executar_campanha(cid, url_anuncio, titulo, quantidade, tom):
     atualizar_campanha(cid, "concluida")
 
 
-# ─── Rotas Flask ─────────────────────────────────────────────────────────────
-
 @app.route("/")
 def home():
     return send_from_directory(".", "index.html")
@@ -462,8 +423,7 @@ def iniciar():
     if not cid or not url_anuncio:
         return jsonify({"erro": "campanha_id e url_anuncio são obrigatórios"}), 400
     campanhas_status[cid] = {"contas": [], "campanha_status": "ativa"}
-    t = threading.Thread(target=executar_campanha,
-                         args=(cid, url_anuncio, titulo, quantidade, tom))
+    t = threading.Thread(target=executar_campanha, args=(cid, url_anuncio, titulo, quantidade, tom))
     t.daemon = True
     t.start()
     return jsonify({"status": "iniciado", "campanha_id": cid})
