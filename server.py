@@ -87,15 +87,14 @@ def extrair_slug(url):
 
 # ─── 2captcha Cloudflare Turnstile ──────────────────────────────────────────
 
-def resolver_cloudflare_challenge(url_pagina):
-    """Usa Playwright para interceptar params do Cloudflare e resolve via 2captcha"""
+def obter_cf_e_device(url_pagina):
+    """Abre GGMAX uma única vez, resolve Cloudflare via 2captcha e intercepta x-gg-device"""
     from playwright.sync_api import sync_playwright
     import json as json_lib
 
-    print(f"  CF_PLAYWRIGHT_INICIANDO...", flush=True)
+    print(f"  PLAYWRIGHT_INICIANDO sessão unificada...", flush=True)
 
     inject_js = """
-        console.clear = () => console.log('Console was cleared');
         const i = setInterval(() => {
             if (window.turnstile) {
                 clearInterval(i);
@@ -107,7 +106,6 @@ def resolver_cloudflare_challenge(url_pagina):
                         pagedata: b.chlPageData,
                         action: b.action,
                         userAgent: navigator.userAgent,
-                        json: 1
                     };
                     console.log('intercepted-params:' + JSON.stringify(params));
                     window.cfCallback = b.callback;
@@ -117,144 +115,131 @@ def resolver_cloudflare_challenge(url_pagina):
         }, 50);
     """
 
-    params = None
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=[
-            '--no-sandbox', '--disable-dev-shm-usage',
-            '--disable-blink-features=AutomationControlled',
-        ])
-        page = browser.new_page()
-        page.add_init_script(inject_js)
-
-        msgs = []
-        page.on("console", lambda msg: msgs.append(msg.text))
-
-        print(f"  CF_NAVEGANDO para {url_pagina}...", flush=True)
-        try:
-            page.goto(url_pagina, timeout=30000, wait_until="domcontentloaded")
-        except Exception:
-            pass
-        page.wait_for_timeout(8000)
-
-        for msg in msgs:
-            if 'intercepted-params:' in msg:
-                raw = msg.replace('intercepted-params:', '').strip()
-                params = json_lib.loads(raw)
-                print(f"  CF_PARAMS_INTERCEPTADOS: sitekey={params.get('sitekey','?')}", flush=True)
-                break
-
-        browser.close()
-
-    if not params:
-        raise Exception("Não conseguiu interceptar params do Cloudflare")
-
-    # Envia para 2captcha API antiga (in.php)
-    print(f"  CAPTCHA_ENVIANDO_2CAPTCHA...", flush=True)
-    r = requests.post("https://2captcha.com/in.php", data={
-        "key": CAPTCHA_KEY,
-        "method": "turnstile",
-        "sitekey": params.get("sitekey", ""),
-        "pageurl": url_pagina,
-        "data": params.get("data", ""),
-        "pagedata": params.get("pagedata", ""),
-        "action": params.get("action", "managed"),
-        "userAgent": params.get("userAgent", ""),
-        "json": 1,
-    }, timeout=30)
-
-    resp_data = r.json()
-    print(f"  CAPTCHA_TASK: {resp_data}", flush=True)
-
-    if resp_data.get("status") != 1:
-        raise Exception(f"2captcha erro: {resp_data}")
-
-    task_id = resp_data["request"]
-
-    # Aguarda resultado
-    for _ in range(36):
-        time.sleep(5)
-        r = requests.get(f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1", timeout=30)
-        result = r.json()
-        print(f"  CAPTCHA_STATUS: {result.get('request','?')[:30]}", flush=True)
-        if result.get("status") == 1:
-            token = result["request"]
-            ua = result.get("useragent", params.get("userAgent", ""))
-            print(f"  CAPTCHA_TOKEN_OK!", flush=True)
-            return token, ua
-        if result.get("request") not in ("CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"):
-            raise Exception(f"2captcha erro resultado: {result}")
-
-    raise Exception("Timeout resolvendo captcha")
-
-
-
-def obter_device_token(cf_token):
-    """Usa Playwright para interceptar o x-gg-device gerado pelo JS da GGMAX"""
-    from playwright.sync_api import sync_playwright
-
-    print(f"  DEVICE_PLAYWRIGHT_INICIANDO...", flush=True)
     device_token = None
     cookies_dict = {}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=[
-            "--no-sandbox", "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
+            '--no-sandbox', '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
         ])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
         )
-
-        # Injeta o cf_clearance como cookie antes de navegar
-        context.add_cookies([{
-            "name": "cf_clearance",
-            "value": cf_token,
-            "domain": "ggmax.com.br",
-            "path": "/",
-        }])
-
         page = context.new_page()
+        page.add_init_script(inject_js)
 
-        # Intercepta requisições para capturar x-gg-device
+        # Intercepta x-gg-device em qualquer requisição
         captured = {}
         def on_request(req):
             gg = req.headers.get("x-gg-device")
-            if gg and not captured.get("token"):
-                captured["token"] = gg
-                print(f"  DEVICE_INTERCEPTADO: {gg[:30]}...", flush=True)
-
+            if gg and not captured.get("device"):
+                captured["device"] = gg
+                print(f"  DEVICE_INTERCEPTADO!", flush=True)
         page.on("request", on_request)
 
-        try:
-            page.goto(GGMAX_URL, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
-
-            # Tenta abrir formulário de cadastro para forçar geração do token
-            if not captured.get("token"):
+        # Captura params do turnstile via console
+        cf_params = {}
+        def on_console(msg):
+            if 'intercepted-params:' in msg.text:
+                raw = msg.text.replace('intercepted-params:', '').strip()
                 try:
-                    page.click("text=Entrar", timeout=5000)
-                    page.wait_for_timeout(2000)
-                    page.click("text=Criar uma conta", timeout=5000)
-                    page.wait_for_timeout(3000)
-                except:
-                    pass
+                    cf_params.update(json_lib.loads(raw))
+                    print(f"  CF_PARAMS: sitekey={cf_params.get('sitekey','?')}", flush=True)
+                except: pass
+        page.on("console", on_console)
 
-            # Aguarda mais um pouco
-            page.wait_for_timeout(3000)
-        except Exception as e:
-            print(f"  DEVICE_NAV_ERRO: {e}", flush=True)
+        # 1. Navega para GGMAX
+        print(f"  NAVEGANDO...", flush=True)
+        try:
+            page.goto(url_pagina, timeout=30000, wait_until="domcontentloaded")
+        except: pass
+        page.wait_for_timeout(5000)
 
-        # Captura cookies da sessão
+        # 2. Se interceptou params do CF, resolve via 2captcha
+        if cf_params.get("sitekey"):
+            print(f"  ENVIANDO_2CAPTCHA...", flush=True)
+            r = requests.post("https://2captcha.com/in.php", data={
+                "key": CAPTCHA_KEY,
+                "method": "turnstile",
+                "sitekey": cf_params.get("sitekey", ""),
+                "pageurl": url_pagina,
+                "data": cf_params.get("data", ""),
+                "pagedata": cf_params.get("pagedata", ""),
+                "action": cf_params.get("action", "managed"),
+                "userAgent": cf_params.get("userAgent", ""),
+                "json": 1,
+            }, timeout=30)
+            resp_data = r.json()
+            print(f"  CAPTCHA_TASK: {resp_data}", flush=True)
+
+            if resp_data.get("status") == 1:
+                task_id = resp_data["request"]
+                # Aguarda token
+                cf_token = None
+                for _ in range(36):
+                    time.sleep(5)
+                    r2 = requests.get(f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1", timeout=30)
+                    result = r2.json()
+                    status_msg = result.get("request", "")
+                    print(f"  CAPTCHA_STATUS: {str(status_msg)[:40]}", flush=True)
+                    if result.get("status") == 1:
+                        cf_token = result["request"]
+                        break
+                    if status_msg not in ("CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"):
+                        break
+
+                if cf_token:
+                    print(f"  CAPTCHA_OK! Injetando token...", flush=True)
+                    # Injeta o token via JS para completar o challenge
+                    page.evaluate(f"if(window.cfCallback) window.cfCallback('{cf_token}')")
+                    page.wait_for_timeout(5000)
+
+        # 3. Tenta navegar para o site principal (após challenge)
+        if not captured.get("device"):
+            try:
+                page.goto(url_pagina, timeout=20000, wait_until="domcontentloaded")
+                page.wait_for_timeout(4000)
+            except: pass
+
+        # 4. Tenta abrir cadastro para forçar requisição com x-gg-device
+        if not captured.get("device"):
+            try:
+                # Clica nas 3 barras
+                page.click("button[aria-label*='menu'], .hamburger, [class*='menu'], [class*='burger']", timeout=3000)
+                page.wait_for_timeout(1000)
+                page.click("text=Entrar", timeout=3000)
+                page.wait_for_timeout(1000)
+                page.click("text=Criar uma conta", timeout=3000)
+                page.wait_for_timeout(2000)
+            except: pass
+
+        # 5. Tenta fazer uma requisição direta à API para forçar o device token
+        if not captured.get("device"):
+            try:
+                page.evaluate("""
+                    fetch('/api/announcements?limit=1', {
+                        headers: {'Accept': 'application/json'}
+                    })
+                """)
+                page.wait_for_timeout(3000)
+            except: pass
+
+        # Captura cookies finais
         for c in context.cookies():
             cookies_dict[c["name"]] = c["value"]
-
-        device_token = captured.get("token")
+        device_token = captured.get("device")
         browser.close()
 
     if not device_token:
-        raise Exception("Não conseguiu interceptar x-gg-device via Playwright")
+        raise Exception("Não conseguiu interceptar x-gg-device")
 
     return device_token, cookies_dict
+
+
+def resolver_cloudflare_challenge(url_pagina):
+    """Wrapper — chama obter_cf_e_device"""
+    return obter_cf_e_device(url_pagina)
 
 
 def headers_ggmax(device_token, auth_token=None):
@@ -344,12 +329,9 @@ def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
     try:
         registrar_conta(cid, numero, usuario, email, "", "resolvendo_captcha")
 
-        # 1. Resolver Cloudflare com Playwright + 2captcha
-        cf_token, cf_useragent = resolver_cloudflare_challenge(GGMAX_URL)
-
-        # 2. Obter device token
-        registrar_conta(cid, numero, usuario, email, "", "obtendo_device")
-        device_token, cookies = obter_device_token(cf_token)
+        # 1. Resolver Cloudflare + interceptar device token (sessão unificada)
+        registrar_conta(cid, numero, usuario, email, "", "resolvendo_cloudflare")
+        device_token, cookies = obter_cf_e_device(GGMAX_URL)
         print(f"  DEVICE_OK: {device_token[:30]}...", flush=True)
 
         # 3. Registrar conta
