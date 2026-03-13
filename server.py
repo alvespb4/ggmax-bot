@@ -92,14 +92,29 @@ def obter_cf_e_device(url_pagina):
 
     # JS que intercepta o turnstile E captura o device token do storage
     inject_js = """
-        // Intercepta XMLHttpRequest para capturar x-gg-device
-        const _origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        // Intercepta turnstile para pegar callback e injetar token depois
+        (function waitTurnstile() {
+            if (window.turnstile) {
+                const orig = window.turnstile.render;
+                window.turnstile.render = function(container, params) {
+                    window.__cf_sitekey = params.sitekey;
+                    window.__cf_cb = params.callback;
+                    console.log('TURNSTILE_READY:' + params.sitekey);
+                    return orig ? orig.call(this, container, params) : 'token';
+                };
+            } else {
+                setTimeout(waitTurnstile, 100);
+            }
+        })();
+
+        // Intercepta XHR para capturar x-gg-device
+        const _origSetHdr = XMLHttpRequest.prototype.setRequestHeader;
         XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
             if (name && name.toLowerCase() === 'x-gg-device') {
                 console.log('XHR_DEVICE:' + value);
                 window.__gg_device = value;
             }
-            return _origSetHeader.apply(this, arguments);
+            return _origSetHdr.apply(this, arguments);
         };
 
         // Intercepta fetch para capturar x-gg-device
@@ -140,15 +155,14 @@ def obter_cf_e_device(url_pagina):
         page = context.new_page()
         page.add_init_script(inject_js)
 
-        # Captura via console (fetch/XHR interceptado no JS)
+        # Captura via console
         captured = {}
         def on_console(msg):
             t = msg.text
-            if t.startswith('CF_PARAMS:'):
-                try:
-                    captured['cf'] = json_lib.loads(t[10:])
-                    print(f"  CF_PARAMS OK: sitekey={captured['cf'].get('sitekey','?')}", flush=True)
-                except: pass
+            if t.startswith('TURNSTILE_READY:'):
+                sk = t.split(':', 1)[1]
+                print(f"  TURNSTILE_READY: {sk}", flush=True)
+                captured['sitekey'] = sk
             elif t.startswith('FETCH_DEVICE:') or t.startswith('XHR_DEVICE:'):
                 dev = t.split(':', 1)[1]
                 if dev and not captured.get('device'):
@@ -184,27 +198,24 @@ def obter_cf_e_device(url_pagina):
             print("  CF_DETECTADO! Resolvendo via 2captcha...", flush=True)
 
             # Extrai sitekey via JS
-            sitekey = page.evaluate("""
-                () => {
-                    const el = document.querySelector('[data-sitekey]');
-                    if (el) return el.getAttribute('data-sitekey');
-                    // Tenta pegar do script
-                    const scripts = [...document.querySelectorAll('script')];
-                    for (const s of scripts) {
-                        const m = s.textContent.match(/sitekey[^a-z]+([0-9a-fx_-]{20,})/i);
-                        if (m) return m[1];
+            sitekey = (
+                captured.get('sitekey') or
+                page.evaluate("""
+                    () => {
+                        const el = document.querySelector('[data-sitekey]');
+                        if (el) return el.getAttribute('data-sitekey');
+                        return null;
                     }
-                    return null;
-                }
-            """) or "0x4AAAAAAADnPIDROrmt1Wwj"
+                """) or "0x4AAAAAAADnPIDROrmt1Wwj"
+            )
             print(f"  SITEKEY: {sitekey}", flush=True)
 
+            print(f"  UA_COMPLETO: {ua_real}", flush=True)
             r = requests.post("https://2captcha.com/in.php", data={
                 "key": CAPTCHA_KEY,
                 "method": "turnstile",
                 "sitekey": sitekey,
                 "pageurl": url_pagina,
-                "userAgent": ua_real,
                 "json": 1,
             }, timeout=30)
             rd = r.json()
@@ -229,13 +240,12 @@ def obter_cf_e_device(url_pagina):
 
                 if cf_token:
                     print("  CF_TOKEN_OK! Injetando...", flush=True)
-                    # Injeta via cfCallback (capturado pelo init_script se disponível)
-                    # Ou via input hidden e submit
                     injected = page.evaluate(f"""
-                        () => {{
-                            // Tenta todas as formas conhecidas
+                        (() => {{
+                            if (window.__cf_cb) {{ window.__cf_cb('{cf_token}'); return '__cf_cb'; }}
                             if (window.cfCallback) {{ window.cfCallback('{cf_token}'); return 'cfCallback'; }}
                             if (window.__cf_callback) {{ window.__cf_callback('{cf_token}'); return '__cf_callback'; }}
+                            // Tenta via input hidden
                             const inp = document.querySelector('[name="cf-turnstile-response"]');
                             if (inp) {{
                                 inp.value = '{cf_token}';
@@ -243,14 +253,13 @@ def obter_cf_e_device(url_pagina):
                                 if (form) {{ form.submit(); return 'form_submit'; }}
                             }}
                             return 'nenhum';
-                        }}
+                        }})()
                     """)
                     print(f"  INJECT_METHOD: {injected}", flush=True)
                     try:
-                        page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        page.wait_for_load_state("networkidle", timeout=20000)
                     except: pass
                     page.wait_for_timeout(5000)
-
                     title = page.title()
                     print(f"  TITLE_APOS_CF: {title[:60]}", flush=True)
 
