@@ -1,6 +1,8 @@
 import sys, os, random, string, time, re, requests, threading
 os.environ["PYTHONUNBUFFERED"] = "1"
-sys.stdout.reconfigure(line_buffering=True)
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except: pass
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -90,27 +92,7 @@ def obter_cf_e_device(url_pagina):
 
     # JS que intercepta o turnstile E captura o device token do storage
     inject_js = """
-        // Intercepta turnstile
-        const _ti = setInterval(() => {
-            if (window.turnstile) {
-                clearInterval(_ti);
-                window.turnstile.render = (a, b) => {
-                    window.__cf_params = {
-                        sitekey: b.sitekey,
-                        data: b.cData,
-                        pagedata: b.chlPageData,
-                        action: b.action,
-                        userAgent: navigator.userAgent,
-                    };
-                    console.log('CF_PARAMS:' + JSON.stringify(window.__cf_params));
-                    window.__cf_callback = b.callback;
-                    return 'foo';
-                };
-            }
-        }, 50);
-
         // Intercepta XMLHttpRequest para capturar x-gg-device
-        const _origOpen = XMLHttpRequest.prototype.open;
         const _origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
         XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
             if (name && name.toLowerCase() === 'x-gg-device') {
@@ -143,9 +125,17 @@ def obter_cf_e_device(url_pagina):
         browser = p.chromium.launch(headless=True, args=[
             '--no-sandbox', '--disable-dev-shm-usage',
             '--disable-blink-features=AutomationControlled',
+            '--disable-web-security',
+            '--window-size=1920,1080',
         ])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
+            extra_http_headers={
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            }
         )
         page = context.new_page()
         page.add_init_script(inject_js)
@@ -181,48 +171,16 @@ def obter_cf_e_device(url_pagina):
         except: pass
         page.wait_for_timeout(6000)
 
-        # 2. Resolve CF Turnstile
-        if captured.get('cf', {}).get('sitekey'):
-            cf = captured['cf']
-            print("  ENVIANDO_2CAPTCHA...", flush=True)
-            r = requests.post("https://2captcha.com/in.php", data={
-                "key": CAPTCHA_KEY, "method": "turnstile",
-                "sitekey": cf.get("sitekey",""), "pageurl": url_pagina,
-                "data": cf.get("data","") or "", "pagedata": cf.get("pagedata","") or "",
-                "action": cf.get("action","managed"),
-                "userAgent": cf.get("userAgent",""), "json": 1,
-            }, timeout=30)
-            rd = r.json()
-            print(f"  TASK: {rd}", flush=True)
-
-            if rd.get("status") == 1:
-                task_id = rd["request"]
-                cf_token = None
-                for _ in range(36):
-                    time.sleep(5)
-                    r2 = requests.get(
-                        f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1",
-                        timeout=30)
-                    res = r2.json()
-                    msg = res.get("request","")
-                    print(f"  CF_STATUS: {str(msg)[:40]}", flush=True)
-                    if res.get("status") == 1:
-                        cf_token = msg
-                        break
-                    if msg not in ("CAPCHA_NOT_READY","CAPTCHA_NOT_READY"):
-                        break
-
-                if cf_token:
-                    print("  CAPTCHA_OK! Injetando...", flush=True)
-                    page.evaluate(f"if(window.__cf_callback) window.__cf_callback('{cf_token}')")
-                    try:
-                        page.wait_for_load_state("domcontentloaded", timeout=15000)
-                    except: pass
-                    page.wait_for_timeout(6000)
-
-        # 3. Verifica título
-        title = page.title()
-        print(f"  TITLE: {title[:60]}", flush=True)
+        # 2. Aguarda o CF resolver sozinho (stealth mode)
+        # Verifica título e aguarda passar
+        for tentativa in range(6):
+            title = page.title()
+            print(f"  TITLE[{tentativa}]: {title[:60]}", flush=True)
+            if "cloudflare" not in title.lower() and "attention" not in title.lower() and "just a moment" not in title.lower():
+                print("  CF_PASSOU!", flush=True)
+                break
+            print(f"  CF_AGUARDANDO... ({tentativa+1}/6)", flush=True)
+            page.wait_for_timeout(5000)
 
         # 4. Tenta extrair device do storage JS
         if not captured.get('device'):
@@ -398,10 +356,18 @@ def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
 
 
 def executar_campanha(cid, url_anuncio, titulo, quantidade, tom):
-    atualizar_campanha(cid, "ativa")
-    for i in range(1, quantidade + 1):
-        processar_conta(cid, url_anuncio, titulo, tom, i, quantidade)
-    atualizar_campanha(cid, "concluida")
+    try:
+        print(f"CAMPANHA_START cid={cid} qtd={quantidade}", flush=True)
+        atualizar_campanha(cid, "ativa")
+        for i in range(1, quantidade + 1):
+            processar_conta(cid, url_anuncio, titulo, tom, i, quantidade)
+        atualizar_campanha(cid, "concluida")
+        print(f"CAMPANHA_FIM cid={cid}", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"CAMPANHA_EXCEPTION: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        atualizar_campanha(cid, "erro")
 
 
 @app.route("/")
@@ -423,9 +389,11 @@ def iniciar():
     if not cid or not url_anuncio:
         return jsonify({"erro": "campanha_id e url_anuncio são obrigatórios"}), 400
     campanhas_status[cid] = {"contas": [], "campanha_status": "ativa"}
+    print(f"INICIAR: cid={cid} url={url_anuncio} qtd={quantidade}", flush=True)
     t = threading.Thread(target=executar_campanha, args=(cid, url_anuncio, titulo, quantidade, tom))
     t.daemon = True
     t.start()
+    print(f"THREAD_STARTED", flush=True)
     return jsonify({"status": "iniciado", "campanha_id": cid})
 
 @app.route("/status", methods=["GET"])
