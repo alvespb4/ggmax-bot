@@ -132,10 +132,14 @@ def obter_cf_e_device(url_pagina):
         # Intercepta x-gg-device em QUALQUER requisição do contexto (persiste após reload)
         captured = {}
         def on_request(req):
+            url = req.url
             gg = req.headers.get("x-gg-device")
+            # Loga todas requisições para ggmax.com.br
+            if "ggmax.com.br" in url and "/api/" in url:
+                print(f"  REQ: {url[-60:]} | device={'SIM' if gg else 'NAO'}", flush=True)
             if gg and not captured.get("device"):
                 captured["device"] = gg
-                print(f"  DEVICE_INTERCEPTADO: {gg[:40]}...", flush=True)
+                print(f"  DEVICE_INTERCEPTADO!", flush=True)
         context.on("request", on_request)
 
         # Captura params do turnstile via console
@@ -210,24 +214,39 @@ def obter_cf_e_device(url_pagina):
                 page.wait_for_timeout(5000)
             except: pass
 
-        # 5. Força requisição à API via JS (isso gera x-gg-device automaticamente)
+        # 5. Força várias requisições à API via JS
         if not captured.get("device"):
-            print("  FORCANDO_REQUISICAO_API...", flush=True)
+            print("  FORCANDO_REQUISICOES_API...", flush=True)
             try:
                 page.evaluate("""
-                    fetch('/api/announcements?limit=12&filter=type&type=diamond&v=2', {
-                        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'}
-                    }).then(r => r.json()).catch(e => console.log('fetch_err:' + e))
+                    // Tenta várias rotas que o site usa normalmente
+                    fetch('/api/announcements?limit=12&filter=type&type=diamond&v=2').catch(()=>{});
+                    fetch('/api/categories').catch(()=>{});
+                    fetch('/api/me').catch(()=>{});
                 """)
                 page.wait_for_timeout(4000)
             except: pass
 
-        # 6. Tenta abrir o formulário de cadastro
+        # 6. Scroll para forçar carregamento lazy
+        if not captured.get("device"):
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(2000)
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(2000)
+            except: pass
+
+        # 7. Tenta abrir o formulário de cadastro
         if not captured.get("device"):
             print("  TENTANDO_ABRIR_CADASTRO...", flush=True)
             try:
-                page.click("button:has-text('menu'), [class*='hamburger'], [class*='Menu']", timeout=3000)
-                page.wait_for_timeout(1000)
+                # Tenta clicar nas 3 barras do menu
+                for sel in ["button.hamburger", "[class*='hamburger']", "[class*='MenuButton']", "button[aria-label]", "nav button"]:
+                    try:
+                        page.click(sel, timeout=2000)
+                        page.wait_for_timeout(1000)
+                        break
+                    except: pass
             except: pass
             try:
                 page.click("text=Entrar", timeout=3000)
@@ -235,6 +254,10 @@ def obter_cf_e_device(url_pagina):
                 page.click("text=Criar uma conta", timeout=3000)
                 page.wait_for_timeout(3000)
             except: pass
+
+        # 8. Aguarda mais tempo para qualquer request pendente
+        if not captured.get("device"):
+            page.wait_for_timeout(5000)
 
         # Captura cookies finais
         for c in context.cookies():
