@@ -191,7 +191,7 @@ def obter_cf_e_device(url_pagina):
                     // Tenta pegar do script
                     const scripts = [...document.querySelectorAll('script')];
                     for (const s of scripts) {
-                        const m = s.textContent.match(/sitekey['":\s]+([0-9a-fx_-]+)/i);
+                        const m = s.textContent.match(/sitekey[^a-z]+([0-9a-fx_-]{20,})/i);
                         if (m) return m[1];
                     }
                     return null;
