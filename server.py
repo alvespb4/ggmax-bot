@@ -193,35 +193,47 @@ def obter_cf_e_device(url_pagina):
                     print(f"  CAPTCHA_OK! Injetando token...", flush=True)
                     # Injeta o token via JS para completar o challenge
                     page.evaluate(f"if(window.cfCallback) window.cfCallback('{cf_token}')")
+                    # Aguarda o site recarregar após passar o challenge
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except: pass
                     page.wait_for_timeout(5000)
 
-        # 3. Tenta navegar para o site principal (após challenge)
-        if not captured.get("device"):
+        # 3. Reanexa o listener após reload (o site recarregou após o challenge)
+        page.on("request", on_request)
+
+        # 4. Tenta navegar direto para a página principal se ainda no challenge
+        title = page.title()
+        print(f"  PAGE_TITLE: {title}", flush=True)
+        if "moment" in title.lower() or "just a" in title.lower():
             try:
                 page.goto(url_pagina, timeout=20000, wait_until="domcontentloaded")
+                page.wait_for_timeout(5000)
+            except: pass
+
+        # 5. Força requisição à API via JS (isso gera x-gg-device automaticamente)
+        if not captured.get("device"):
+            print("  FORCANDO_REQUISICAO_API...", flush=True)
+            try:
+                page.evaluate("""
+                    fetch('/api/announcements?limit=12&filter=type&type=diamond&v=2', {
+                        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'}
+                    }).then(r => r.json()).catch(e => console.log('fetch_err:' + e))
+                """)
                 page.wait_for_timeout(4000)
             except: pass
 
-        # 4. Tenta abrir cadastro para forçar requisição com x-gg-device
+        # 6. Tenta abrir o formulário de cadastro
         if not captured.get("device"):
+            print("  TENTANDO_ABRIR_CADASTRO...", flush=True)
             try:
-                # Clica nas 3 barras
-                page.click("button[aria-label*='menu'], .hamburger, [class*='menu'], [class*='burger']", timeout=3000)
+                page.click("button:has-text('menu'), [class*='hamburger'], [class*='Menu']", timeout=3000)
                 page.wait_for_timeout(1000)
+            except: pass
+            try:
                 page.click("text=Entrar", timeout=3000)
                 page.wait_for_timeout(1000)
                 page.click("text=Criar uma conta", timeout=3000)
-                page.wait_for_timeout(2000)
-            except: pass
-
-        # 5. Tenta fazer uma requisição direta à API para forçar o device token
-        if not captured.get("device"):
-            try:
-                page.evaluate("""
-                    fetch('/api/announcements?limit=1', {
-                        headers: {'Accept': 'application/json'}
-                    })
-                """)
                 page.wait_for_timeout(3000)
             except: pass
 
