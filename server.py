@@ -171,16 +171,88 @@ def obter_cf_e_device(url_pagina):
         except: pass
         page.wait_for_timeout(6000)
 
-        # 2. Aguarda o CF resolver sozinho (stealth mode)
-        # Verifica título e aguarda passar
-        for tentativa in range(6):
-            title = page.title()
-            print(f"  TITLE[{tentativa}]: {title[:60]}", flush=True)
-            if "cloudflare" not in title.lower() and "attention" not in title.lower() and "just a moment" not in title.lower():
-                print("  CF_PASSOU!", flush=True)
-                break
-            print(f"  CF_AGUARDANDO... ({tentativa+1}/6)", flush=True)
-            page.wait_for_timeout(5000)
+        # 2. Pega o userAgent real do browser
+        ua_real = page.evaluate("navigator.userAgent")
+        print(f"  UA: {ua_real[:80]}", flush=True)
+
+        # 3. Resolve CF via 2captcha com userAgent real do browser
+        title = page.title()
+        print(f"  TITLE_INICIAL: {title[:60]}", flush=True)
+
+        blocked_words = ["cloudflare", "attention", "just a moment", "um momento", "aguarde"]
+        if any(w in title.lower() for w in blocked_words):
+            print("  CF_DETECTADO! Resolvendo via 2captcha...", flush=True)
+
+            # Extrai sitekey via JS
+            sitekey = page.evaluate("""
+                () => {
+                    const el = document.querySelector('[data-sitekey]');
+                    if (el) return el.getAttribute('data-sitekey');
+                    // Tenta pegar do script
+                    const scripts = [...document.querySelectorAll('script')];
+                    for (const s of scripts) {
+                        const m = s.textContent.match(/sitekey['":\s]+([0-9a-fx_-]+)/i);
+                        if (m) return m[1];
+                    }
+                    return null;
+                }
+            """) or "0x4AAAAAAADnPIDROrmt1Wwj"
+            print(f"  SITEKEY: {sitekey}", flush=True)
+
+            r = requests.post("https://2captcha.com/in.php", data={
+                "key": CAPTCHA_KEY,
+                "method": "turnstile",
+                "sitekey": sitekey,
+                "pageurl": url_pagina,
+                "userAgent": ua_real,
+                "json": 1,
+            }, timeout=30)
+            rd = r.json()
+            print(f"  2CAP_TASK: {rd}", flush=True)
+
+            if rd.get("status") == 1:
+                task_id = rd["request"]
+                cf_token = None
+                for _ in range(36):
+                    time.sleep(5)
+                    r2 = requests.get(
+                        f"https://2captcha.com/res.php?key={CAPTCHA_KEY}&action=get&id={task_id}&json=1",
+                        timeout=30)
+                    res = r2.json()
+                    msg = res.get("request", "")
+                    print(f"  2CAP_STATUS: {str(msg)[:50]}", flush=True)
+                    if res.get("status") == 1:
+                        cf_token = msg
+                        break
+                    if msg not in ("CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"):
+                        break
+
+                if cf_token:
+                    print("  CF_TOKEN_OK! Injetando...", flush=True)
+                    # Injeta via cfCallback (capturado pelo init_script se disponível)
+                    # Ou via input hidden e submit
+                    injected = page.evaluate(f"""
+                        () => {{
+                            // Tenta todas as formas conhecidas
+                            if (window.cfCallback) {{ window.cfCallback('{cf_token}'); return 'cfCallback'; }}
+                            if (window.__cf_callback) {{ window.__cf_callback('{cf_token}'); return '__cf_callback'; }}
+                            const inp = document.querySelector('[name="cf-turnstile-response"]');
+                            if (inp) {{
+                                inp.value = '{cf_token}';
+                                const form = inp.closest('form');
+                                if (form) {{ form.submit(); return 'form_submit'; }}
+                            }}
+                            return 'nenhum';
+                        }}
+                    """)
+                    print(f"  INJECT_METHOD: {injected}", flush=True)
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except: pass
+                    page.wait_for_timeout(5000)
+
+                    title = page.title()
+                    print(f"  TITLE_APOS_CF: {title[:60]}", flush=True)
 
         # 4. Tenta extrair device do storage JS
         if not captured.get('device'):
