@@ -129,14 +129,14 @@ def obter_cf_e_device(url_pagina):
         page = context.new_page()
         page.add_init_script(inject_js)
 
-        # Intercepta x-gg-device em qualquer requisição
+        # Intercepta x-gg-device em QUALQUER requisição do contexto (persiste após reload)
         captured = {}
         def on_request(req):
             gg = req.headers.get("x-gg-device")
             if gg and not captured.get("device"):
                 captured["device"] = gg
-                print(f"  DEVICE_INTERCEPTADO!", flush=True)
-        page.on("request", on_request)
+                print(f"  DEVICE_INTERCEPTADO: {gg[:40]}...", flush=True)
+        context.on("request", on_request)
 
         # Captura params do turnstile via console
         cf_params = {}
@@ -199,8 +199,7 @@ def obter_cf_e_device(url_pagina):
                     except: pass
                     page.wait_for_timeout(5000)
 
-        # 3. Reanexa o listener após reload (o site recarregou após o challenge)
-        page.on("request", on_request)
+        # 3. Listener já está no context — persiste após reload automaticamente
 
         # 4. Tenta navegar direto para a página principal se ainda no challenge
         title = page.title()
