@@ -1,4 +1,8 @@
-import sys, os, random, string, time, re, requests, threading
+"""
+GGMAX BOT - Server Flask
+Integra com o painel web e roda o bot
+"""
+import sys, os, random, string, time, re, threading, json
 os.environ["PYTHONUNBUFFERED"] = "1"
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -6,27 +10,27 @@ except: pass
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from groq import Groq
 
 app = Flask(__name__)
 CORS(app)
 
-GROQ_API_KEY    = "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"
-BASE44_ENDPOINT = "https://preview-sandbox--69ab80547aecb9090ac003a1.base44.app/functions/webhook"
-BASE44_API_KEY  = "5e03b0370d5f42d8a6e011517930bfe4"
-CAPTCHA_KEY     = "0a0c73fdbddbe3001115bd157f04979a"
-MAILTM_API      = "https://api.mail.tm"
-GGMAX_API       = "https://ggmax.com.br/api"
-GGMAX_URL       = "https://ggmax.com.br"
-UA              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+# ==================== CONFIGURAÇÕES ====================
+GROQ_KEY = "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"
+API_KEY  = "5e03b0370d5f42d8a6e011517930bfe4"
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+PROXY = {
+    "host": "res.proxy-seller.com",
+    "port": 10000,
+    "user": "apic150d39d45b4473b",
+    "pass": "3V7cpy5K",
+}
+# =======================================================
+
 campanhas_status = {}
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def registrar_conta_local(cid, num, user, email, perg, status, erro=""):
+def registrar_conta(cid, num, user, email, perg, status, erro=""):
     campanhas_status.setdefault(cid, {"contas": [], "campanha_status": "ativa"})
     contas = campanhas_status[cid]["contas"]
     obj = next((c for c in contas if c["numero"] == num), None)
@@ -35,480 +39,372 @@ def registrar_conta_local(cid, num, user, email, perg, status, erro=""):
     else:
         contas.append({"numero": num, "usuario": user, "email": email, "pergunta": perg, "status": status, "erro": erro})
 
-def registrar_conta(cid, num, user, email, perg, status, erro=""):
-    registrar_conta_local(cid, num, user, email, perg, status, erro)
-    try:
-        requests.post(BASE44_ENDPOINT, json={
-            "api_key": BASE44_API_KEY, "campanha_id": cid, "numero": num,
-            "usuario": user, "email": email, "pergunta": perg,
-            "status": status, "erro": erro}, timeout=10)
-    except: pass
-
 def atualizar_campanha(cid, status):
     campanhas_status.setdefault(cid, {})["campanha_status"] = status
-    try:
-        requests.post(BASE44_ENDPOINT, json={
-            "api_key": BASE44_API_KEY, "campanha_id": cid,
-            "tipo": "atualizar_campanha", "status": status}, timeout=10)
-    except: pass
+
+# ── bot functions ─────────────────────────────────────────────────────────────
+
+import requests as req
+import zipfile, tempfile
+
+CF_WORDS = ["um momento", "just a moment", "un instant", "один момент",
+            "performing security", "verification en cours", "einen moment"]
+
+INJECT_JS = """
+window.__dev = null;
+window.__auth_token = null;
+const oF = window.fetch;
+window.fetch = async function(url, opts) {
+    const resp = await oF.apply(this, arguments);
+    if (url && url.includes('/api/auth')) {
+        try { const d = await resp.clone().json(); if(d.token) window.__auth_token=d.token; } catch(e) {}
+    }
+    return resp;
+};
+"""
+
+def is_cf(title):
+    return any(w in title.lower() for w in CF_WORDS)
 
 def gerar_usuario():
-    nomes = ["miguel","carlos","gabriel","lucas","pedro","joao","andre","rafael"]
-    return random.choice(nomes) + str(random.randint(10, 999))
+    nomes = ["joao","pedro","lucas","mateus","gabriel","felipe","andre","bruno","carlos","diego"]
+    return random.choice(nomes) + ''.join(random.choices(string.digits, k=4))
 
 def gerar_senha():
-    nomes = ["Gabriel","Carlos","Miguel","Lucas","Pedro","Andre","Rafael"]
-    return random.choice(nomes) + random.choice(["@","#"]) + str(random.randint(10, 9999))
+    return "Gabriel@" + ''.join(random.choices(string.digits, k=4))
+
+def fechar_popups(driver):
+    from selenium.webdriver.common.by import By
+    for xpath in [
+        "//button[contains(text(),'Aceitar tudo')]",
+        "//button[contains(text(),'Aceitar')]",
+        "//button[contains(text(),'Bloquear')]",
+        "//button[contains(text(),'Nunca')]",
+    ]:
+        try:
+            for btn in driver.find_elements(By.XPATH, xpath):
+                if btn.is_displayed():
+                    btn.click()
+                    time.sleep(0.3)
+        except:
+            pass
+
+def monitorar_popups(driver, parar):
+    while not parar.is_set():
+        try:
+            fechar_popups(driver)
+        except:
+            pass
+        time.sleep(1)
+
+def criar_extensao_proxy():
+    manifest = '{"version":"1.0.0","manifest_version":2,"name":"Proxy Auth","permissions":["proxy","tabs","unlimitedStorage","storage","<all_urls>","webRequest","webRequestBlocking"],"background":{"scripts":["background.js"]},"minimum_chrome_version":"22.0.0"}'
+    background = f'var config={{mode:"fixed_servers",rules:{{singleProxy:{{scheme:"http",host:"{PROXY["host"]}",port:{PROXY["port"]}}},bypassList:["localhost"]}}}};chrome.proxy.settings.set({{value:config,scope:"regular"}},function(){{}});function callbackFn(d){{return{{authCredentials:{{username:"{PROXY["user"]}",password:"{PROXY["pass"]}"}}}};}}chrome.webRequest.onAuthRequired.addListener(callbackFn,{{urls:["<all_urls>"]}},["blocking"]);'
+    ext_path = os.path.join(tempfile.gettempdir(), "proxy_auth_ext.zip")
+    with zipfile.ZipFile(ext_path, 'w') as zp:
+        zp.writestr("manifest.json", manifest)
+        zp.writestr("background.js", background)
+    return ext_path
+
+def criar_driver():
+    import undetected_chromedriver as uc
+
+    # Detecta se está no Railway/Linux ou Windows local
+    is_linux = os.name != 'nt'
+
+    ext_path = criar_extensao_proxy()
+    options = uc.ChromeOptions()
+    options.add_extension(ext_path)
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-notifications")
+    options.add_argument("--lang=pt-BR")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+
+    if is_linux:
+        # Railway/Linux — headless com Xvfb
+        options.add_argument("--headless=new")
+        options.add_argument("--display=:99")
+        chrome_path = "/usr/bin/google-chrome"
+        if os.path.exists(chrome_path):
+            options.binary_location = chrome_path
+
+    options.add_experimental_option("prefs", {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+        "profile.default_content_setting_values.notifications": 2,
+    })
+
+    headless = is_linux
+    driver = uc.Chrome(headless=headless, options=options)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": INJECT_JS})
+    return driver
+
+def criar_email():
+    try:
+        r = req.get("https://api.mail.tm/domains", timeout=10)
+        domain = r.json()["hydra:member"][0]["domain"]
+        usuario = gerar_usuario()
+        email = f"{usuario}@{domain}"
+        senha = gerar_senha()
+        r = req.post("https://api.mail.tm/accounts", json={"address": email, "password": senha}, timeout=10)
+        if r.status_code not in [200, 201]:
+            return None
+        r = req.post("https://api.mail.tm/token", json={"address": email, "password": senha}, timeout=10)
+        return {"email": email, "senha": senha, "token": r.json().get("token"), "usuario": usuario}
+    except:
+        return None
+
+def aguardar_confirmacao(mail_token, timeout=300):
+    headers = {"Authorization": f"Bearer {mail_token}"}
+    for i in range(timeout // 5):
+        time.sleep(5)
+        try:
+            r = req.get("https://api.mail.tm/messages", headers=headers, timeout=10)
+            msgs = r.json().get("hydra:member", [])
+            if msgs:
+                r2 = req.get(f"https://api.mail.tm/messages/{msgs[0]['id']}", headers=headers, timeout=10)
+                data = r2.json()
+                for body in [str(data.get("html","")), str(data.get("text",""))]:
+                    links = re.findall(r'https://ggmax\.com\.br/register/confirm/[a-f0-9]+', body)
+                    if links:
+                        return links[0]
+        except:
+            pass
+    return None
 
 def gerar_pergunta(titulo, tom="variado"):
     try:
-        tons = {"curioso":"curiosa e genuína","interessado":"interessada e positiva",
-                "direto":"direta e curta","variado":random.choice(["curiosa","direta","simples"])}
-        r = groq_client.chat.completions.create(
-            model="llama3-8b-8192", max_tokens=60,
-            messages=[{"role":"user","content":(
-                f"Gere UMA pergunta {tons.get(tom,'curiosa')} para: '{titulo}'. "
-                "Comprador brasileiro. APENAS a pergunta. Máximo 15 palavras.")}])
-        return r.choices[0].message.content.strip()
-    except:
-        return random.choice([
-            "Qual o prazo de entrega após o pagamento?",
-            "Funciona em qualquer dispositivo?",
-            "Tem suporte caso tenha algum problema?",
-            "Como recebo após confirmar o pagamento?",
-        ])
-
-def extrair_slug(url):
-    m = re.search(r'/anuncio/([^/?#]+)', url)
-    return m.group(1) if m else None
-
-def headers_ggmax(device_token, auth_token=None):
-    h = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Origin": GGMAX_URL,
-        "Referer": GGMAX_URL + "/",
-        "User-Agent": UA,
-        "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "x-gg-device": device_token,
-    }
-    if auth_token:
-        h["Authorization"] = f"Bearer {auth_token}"
-    return h
-
-
-# ── 2captcha (API v2) ─────────────────────────────────────────────────────────
-
-def resolver_turnstile(sitekey, pageurl):
-    """Resolve Cloudflare Turnstile via 2captcha API v2. Retorna token ou None."""
-    print("  2CAP_ENVIANDO...", flush=True)
-    r = requests.post("https://api.2captcha.com/createTask", json={
-        "clientKey": CAPTCHA_KEY,
-        "task": {
-            "type": "TurnstileTaskProxyless",
-            "websiteURL": pageurl,
-            "websiteKey": sitekey,
+        prompts = {
+            "variado": f"Crie UMA pergunta curta (máx 15 palavras) sobre: {titulo}. Só a pergunta.",
+            "curioso": f"Crie UMA pergunta curiosa e interessada (máx 15 palavras) sobre: {titulo}. Só a pergunta.",
+            "direto": f"Crie UMA pergunta direta e objetiva (máx 10 palavras) sobre: {titulo}. Só a pergunta.",
         }
-    }, timeout=30)
-    rd = r.json()
-    print(f"  2CAP_TASK: {rd}", flush=True)
-
-    task_id = rd.get("taskId")
-    if not task_id:
-        print(f"  2CAP_ERRO_CRIAR: {rd}", flush=True)
-        return None
-
-    for _ in range(36):
-        time.sleep(5)
-        r2 = requests.post("https://api.2captcha.com/getTaskResult", json={
-            "clientKey": CAPTCHA_KEY,
-            "taskId": task_id,
-        }, timeout=30)
-        res = r2.json()
-        status = res.get("status", "")
-        print(f"  2CAP_STATUS: {status}", flush=True)
-        if status == "ready":
-            token = res.get("solution", {}).get("token")
-            print(f"  2CAP_TOKEN_OK!", flush=True)
-            return token
-        if status not in ("processing", ""):
-            print(f"  2CAP_FALHOU: {res}", flush=True)
-            return None
-    return None
-
-
-# ── Playwright: passa CF e captura x-gg-device ───────────────────────────────
-
-def obter_cf_e_device(url_pagina):
-    from playwright.sync_api import sync_playwright
-
-    print("  PLAYWRIGHT_START...", flush=True)
-
-    # CORREÇÃO CRÍTICA: NÃO chamar orig() no turnstile.render
-    # Isso bloqueia o CF de resolver sozinho, forçando uso do nosso token
-    # Também intercepta fetch/XHR para capturar x-gg-device
-    inject_js = """
-        // Bloqueia o turnstile de resolver sozinho e captura o callback
-        Object.defineProperty(window, 'turnstile', {
-            configurable: true,
-            get: function() { return window.__turnstile_real; },
-            set: function(t) {
-                window.__turnstile_real = t;
-                if (t && t.render) {
-                    const origRender = t.render.bind(t);
-                    t.render = function(container, params) {
-                        window.__cf_sitekey = params.sitekey;
-                        window.__cf_cb = params.callback;
-                        console.log('CF_SITEKEY:' + params.sitekey);
-                        // NÃO chama origRender — bloqueia renderização real
-                        // Retorna dummy token para não dar erro
-                        return 'dummy';
-                    };
-                }
-            }
-        });
-
-        // Intercepta fetch para capturar x-gg-device
-        (function() {
-            const _orig = window.fetch;
-            window.fetch = function(url, opts) {
-                if (opts && opts.headers) {
-                    const h = opts.headers;
-                    const dev = (h instanceof Headers) ? h.get('x-gg-device') :
-                                (h && typeof h === 'object' ? (h['x-gg-device'] || h['X-Gg-Device']) : null);
-                    if (dev) {
-                        console.log('FETCH_DEVICE:' + dev);
-                        window.__gg_device = dev;
-                    }
-                }
-                return _orig.apply(this, arguments);
-            };
-        })();
-
-        // Intercepta XHR para capturar x-gg-device
-        (function() {
-            const _orig = XMLHttpRequest.prototype.setRequestHeader;
-            XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-                if (name && name.toLowerCase() === 'x-gg-device') {
-                    console.log('XHR_DEVICE:' + value);
-                    window.__gg_device = value;
-                }
-                return _orig.apply(this, arguments);
-            };
-        })();
-    """
-
-    device_token = None
-    cookies_dict = {}
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--window-size=1920,1080",
-        ])
-        context = browser.new_context(
-            user_agent=UA,
-            viewport={"width": 1920, "height": 1080},
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-            extra_http_headers={"Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8"},
+        r = req.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+            json={"model": "llama3-8b-8192", "messages": [{"role": "user", "content": prompts.get(tom, prompts["variado"])}], "max_tokens": 50},
+            timeout=15
         )
-        page = context.new_page()
-        page.add_init_script(inject_js)
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except:
+        return random.choice(["Qual o prazo de entrega?", "Ainda disponível?", "Aceita negociação?"])
 
-        captured = {}
-
-        def on_console(msg):
-            t = msg.text
-            if t.startswith("CF_SITEKEY:"):
-                sk = t.split(":", 1)[1]
-                captured["sitekey"] = sk
-                print(f"  CF_SITEKEY: {sk}", flush=True)
-            elif t.startswith("FETCH_DEVICE:") or t.startswith("XHR_DEVICE:"):
-                dev = t.split(":", 1)[1].strip()
-                if dev and not captured.get("device"):
-                    captured["device"] = dev
-                    print("  DEVICE_VIA_JS!", flush=True)
-
-        page.on("console", on_console)
-
-        # Playwright backup para capturar device
-        def on_request(req):
-            gg = req.headers.get("x-gg-device")
-            if gg and not captured.get("device"):
-                captured["device"] = gg
-                print("  DEVICE_VIA_PW!", flush=True)
-        context.on("request", on_request)
-
-        # 1. Navega para a página
-        print("  NAVEGANDO...", flush=True)
+def aguardar_cf(driver, timeout=40):
+    for i in range(timeout // 2):
+        time.sleep(2)
         try:
-            page.goto(url_pagina, timeout=30000, wait_until="domcontentloaded")
-        except: pass
-        page.wait_for_timeout(5000)
+            if not is_cf(driver.title):
+                return True
+        except:
+            pass
+    return False
 
-        title = page.title()
-        print(f"  TITLE: {title[:70]}", flush=True)
+def executar_conta(cid, url_anuncio, titulo, num_conta, tom="variado", delay=5):
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
 
-        # 2. Se CF detectado, resolve via 2captcha
-        blocked = ["cloudflare", "attention", "just a moment", "um momento", "aguarde"]
-        if any(w in title.lower() for w in blocked):
-            sitekey = captured.get("sitekey") or "0x4AAAAAAADnPIDROrmt1Wwj"
-            print(f"  CF_DETECTADO! sitekey={sitekey}", flush=True)
+    slug_match = re.search(r'ggmax\.com\.br/(?:anuncio/)?([^/?]+)', url_anuncio)
+    slug = slug_match.group(1) if slug_match else url_anuncio.split('/')[-1]
 
-            cf_token = resolver_turnstile(sitekey, url_pagina)
+    registrar_conta(cid, num_conta, "", "", "", "iniciando")
 
-            if cf_token:
-                # Injeta o token no callback capturado
-                injected = page.evaluate(f"""
-                    (() => {{
-                        if (window.__cf_cb) {{
-                            window.__cf_cb('{cf_token}');
-                            return '__cf_cb';
-                        }}
-                        // Tenta via form hidden
-                        const inp = document.querySelector('[name="cf-turnstile-response"]');
-                        if (inp) {{
-                            inp.value = '{cf_token}';
-                            const form = inp.closest('form');
-                            if (form) {{ form.submit(); return 'form_submit'; }}
-                        }}
-                        return 'nenhum';
-                    }})()
-                """)
-                print(f"  INJECT: {injected}", flush=True)
-
-                # Aguarda página carregar após CF
-                try:
-                    page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except: pass
-                page.wait_for_timeout(6000)
-
-                title = page.title()
-                print(f"  TITLE_POS_CF: {title[:70]}", flush=True)
-            else:
-                print("  2CAP_FALHOU — sem token CF", flush=True)
-
-        # 3. Aguarda as requisições naturais do site carregarem (onde x-gg-device aparece)
-        if not captured.get("device"):
-            print("  AGUARDANDO_DEVICE...", flush=True)
-            for _ in range(12):  # até 12s
-                page.wait_for_timeout(1000)
-                if captured.get("device"):
-                    break
-
-        # 4. Tenta pegar device do window (fallback)
-        if not captured.get("device"):
-            try:
-                dev = page.evaluate("window.__gg_device || null")
-                if dev:
-                    captured["device"] = dev
-                    print("  DEVICE_VIA_WINDOW!", flush=True)
-            except: pass
-
-        # 5. Debug: loga o que tem no localStorage
-        if not captured.get("device"):
-            try:
-                keys = page.evaluate("Object.keys(localStorage)")
-                print(f"  LS_KEYS: {keys}", flush=True)
-                # Tenta todas as keys que parecem device
-                for k in keys:
-                    if "device" in k.lower() or "token" in k.lower():
-                        v = page.evaluate(f"localStorage.getItem('{k}')")
-                        print(f"  LS[{k}]: {str(v)[:60]}", flush=True)
-            except: pass
-
-        for c in context.cookies():
-            cookies_dict[c["name"]] = c["value"]
-        device_token = captured.get("device")
-        browser.close()
-
-    if not device_token:
-        raise Exception("Não conseguiu capturar x-gg-device")
-
-    return device_token, cookies_dict
-
-
-# ── Mail.tm ───────────────────────────────────────────────────────────────────
-
-class MailTM:
-    def __init__(self):
-        self.email = self.senha = self.token = None
-
-    def criar_conta(self):
-        resp = requests.get(f"{MAILTM_API}/domains")
-        dom = resp.json().get("hydra:member", [{}])[0].get("domain", "dollicons.com")
-        u = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
-        self.email = f"{u}@{dom}"
-        self.senha = gerar_senha()
-        r = requests.post(f"{MAILTM_API}/accounts", json={"address": self.email, "password": self.senha})
-        if r.status_code not in (200, 201):
-            raise Exception(f"Erro criar email: {r.text}")
-        print(f"  EMAIL_CRIADO: {self.email}", flush=True)
-        return self.email
-
-    def autenticar(self):
-        r = requests.post(f"{MAILTM_API}/token", json={"address": self.email, "password": self.senha})
-        self.token = r.json().get("token")
-
-    def aguardar_link(self, timeout=120):
-        if not self.token:
-            self.autenticar()
-        headers = {"Authorization": f"Bearer {self.token}"}
-        inicio = time.time()
-        print("  AGUARDANDO_EMAIL...", flush=True)
-        while time.time() - inicio < timeout:
-            msgs = requests.get(f"{MAILTM_API}/messages", headers=headers).json().get("hydra:member", [])
-            for msg in msgs:
-                assunto = msg.get("subject", "").lower()
-                remetente = msg.get("from", {}).get("address", "").lower()
-                if "ggmax" in remetente or any(w in assunto for w in ["verific", "confirm", "ativ"]):
-                    det = requests.get(f"{MAILTM_API}/messages/{msg['id']}", headers=headers).json()
-                    conteudo = (det.get("html") or "") + (det.get("text") or "")
-                    links = re.findall(r'https?://[^\s"<>]+ggmax[^\s"<>]+', conteudo)
-                    if links:
-                        print(f"  LINK_EMAIL: {links[0][:80]}", flush=True)
-                        return links[0].strip()
-            time.sleep(5)
-        raise Exception("Timeout: e-mail de confirmação não chegou")
-
-
-# ── Fluxo principal ───────────────────────────────────────────────────────────
-
-def processar_conta(cid, url_anuncio, titulo, tom, numero, total):
-    usuario = gerar_usuario()
-    senha   = gerar_senha()
-    email   = None
-    pergunta = None
-
-    print(f"CONTA [{numero}/{total}] user={usuario}", flush=True)
-
-    mailtm = MailTM()
-    try:
-        email = mailtm.criar_conta()
-    except Exception as e:
-        registrar_conta(cid, numero, usuario, "", "", "erro", str(e))
+    mail = criar_email()
+    if not mail:
+        registrar_conta(cid, num_conta, "", "", "", "erro", "Falha criar email")
         return
 
-    try:
-        # 1. Resolver CF e capturar device token
-        registrar_conta(cid, numero, usuario, email, "", "resolvendo_cloudflare")
-        device_token, cookies = obter_cf_e_device(GGMAX_URL)
-        print(f"  DEVICE_OK!", flush=True)
+    registrar_conta(cid, num_conta, mail["usuario"], mail["email"], "", "cadastrando")
+    senha = mail["senha"]
 
-        # 2. Registrar conta
-        registrar_conta(cid, numero, usuario, email, "", "cadastrando")
-        r = requests.post(f"{GGMAX_API}/register",
-            json={"username": usuario, "email": email, "password": senha, "confirmPassword": senha},
-            headers=headers_ggmax(device_token), cookies=cookies, timeout=30)
-        print(f"  REGISTER: {r.status_code} | {r.text[:200]}", flush=True)
-        if r.status_code not in (200, 201):
-            raise Exception(f"Registro falhou: {r.status_code} {r.text[:100]}")
+    for tentativa in range(1, 4):
+        driver = None
+        parar = threading.Event()
+        try:
+            driver = criar_driver()
+            popup_thread = threading.Thread(target=monitorar_popups, args=(driver, parar), daemon=True)
+            popup_thread.start()
+            driver.execute_cdp_cmd("Network.enable", {})
 
-        # 3. Confirmar e-mail
-        registrar_conta(cid, numero, usuario, email, "", "verificando")
-        link = mailtm.aguardar_link(120)
-        requests.get(link, headers=headers_ggmax(device_token), allow_redirects=True, timeout=30)
-        time.sleep(2)
+            driver.get("https://ggmax.com.br")
+            time.sleep(3)
+            if is_cf(driver.title):
+                if not aguardar_cf(driver):
+                    driver.quit()
+                    continue
 
-        # 4. Login
-        registrar_conta(cid, numero, usuario, email, "", "logando")
-        r = requests.post(f"{GGMAX_API}/auth",
-            json={"username": usuario, "password": senha, "googleAccessToken": "", "code": None, "validation": None},
-            headers=headers_ggmax(device_token), cookies=cookies, timeout=30)
-        print(f"  LOGIN: {r.status_code} | {r.text[:200]}", flush=True)
-        if r.status_code not in (200, 201):
-            raise Exception(f"Login falhou: {r.status_code} {r.text[:100]}")
+            wait = WebDriverWait(driver, 15)
 
-        login_data = r.json()
-        auth_token = login_data.get("token") or login_data.get("access_token") or login_data.get("accessToken")
-        if not auth_token:
-            raise Exception(f"Token não encontrado: {str(login_data)[:200]}")
-        print("  LOGIN_OK", flush=True)
+            # Abre modal cadastro
+            driver.execute_script("document.querySelector('.header__account a').dispatchEvent(new MouseEvent('click',{bubbles:true}))")
+            time.sleep(2)
+            driver.execute_script("document.querySelectorAll('.account-menu a').forEach(a=>{if(a.textContent.trim()==='Entrar')a.dispatchEvent(new MouseEvent('click',{bubbles:true}))})")
+            time.sleep(2)
+            driver.execute_script("document.querySelectorAll('a,button,span').forEach(el=>{if(el.textContent.includes('Criar uma conta'))el.click()})")
+            time.sleep(2)
 
-        # 5. Postar pergunta
-        pergunta = gerar_pergunta(titulo, tom)
-        registrar_conta(cid, numero, usuario, email, pergunta, "perguntando")
-        slug = extrair_slug(url_anuncio)
-        print(f"  PERGUNTA: {pergunta}", flush=True)
+            # Preenche cadastro
+            try:
+                wait.until(EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Usuário']"))).send_keys(mail["usuario"])
+                driver.find_element(By.XPATH, "//input[@placeholder='E-mail']").send_keys(mail["email"])
+                for f in driver.find_elements(By.CSS_SELECTOR, "input[type='password']"):
+                    f.send_keys(senha)
+                time.sleep(1)
+                driver.execute_script("document.querySelectorAll('button').forEach(b=>{if(b.textContent.trim().toUpperCase()==='CADASTRAR')b.click()})")
+                time.sleep(5)
+            except Exception as e:
+                print(f"  Erro cadastro: {e}")
 
-        r = requests.post(f"{GGMAX_API}/listings/{slug}/questions",
-            json={"question": pergunta},
-            headers=headers_ggmax(device_token, auth_token=auth_token),
-            cookies=cookies, timeout=30)
-        print(f"  PERGUNTA_STATUS: {r.status_code} | {r.text[:200]}", flush=True)
+            # Email
+            registrar_conta(cid, num_conta, mail["usuario"], mail["email"], "", "verificando")
+            link = aguardar_confirmacao(mail["token"])
+            if link:
+                driver.get(link)
+                time.sleep(3)
+                if is_cf(driver.title):
+                    aguardar_cf(driver)
 
-        if r.status_code in (200, 201):
-            registrar_conta(cid, numero, usuario, email, pergunta, "concluido")
-            print(f"  CONCLUIDO [{numero}/{total}]", flush=True)
-        else:
-            raise Exception(f"Pergunta falhou: {r.status_code} {r.text[:100]}")
+            # Login
+            registrar_conta(cid, num_conta, mail["usuario"], mail["email"], "", "logando")
+            driver.execute_script("document.querySelector('.header__account a').dispatchEvent(new MouseEvent('click',{bubbles:true}))")
+            time.sleep(2)
+            driver.execute_script("document.querySelectorAll('.account-menu a').forEach(a=>{if(a.textContent.trim()==='Entrar')a.dispatchEvent(new MouseEvent('click',{bubbles:true}))})")
+            time.sleep(2)
 
-    except Exception as e:
-        print(f"  ERRO [{numero}/{total}]: {e}", flush=True)
-        registrar_conta(cid, numero, usuario, email or "", pergunta or "", "erro", str(e))
+            try:
+                wait.until(EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Usuário ou e-mail']"))).send_keys(mail["usuario"])
+                driver.find_element(By.CSS_SELECTOR, "input[type='password']").send_keys(senha)
+                driver.execute_script("document.querySelectorAll('button').forEach(b=>{if(b.textContent.trim().toUpperCase()==='ENTRAR')b.click()})")
+                time.sleep(5)
+            except Exception as e:
+                print(f"  Erro login: {e}")
 
-    time.sleep(random.uniform(3.0, 8.0))
+            # Token
+            auth_token = None
+            for i in range(15):
+                try:
+                    t = driver.execute_script("return window.__auth_token")
+                    if t:
+                        auth_token = t
+                        break
+                    t = driver.execute_script("for(let k of Object.keys(localStorage)){let v=localStorage.getItem(k);if(v&&v.length>50&&k.toLowerCase().includes('token'))return v;}return null;")
+                    if t:
+                        auth_token = t
+                        break
+                except:
+                    pass
+                time.sleep(1)
 
+            if not auth_token:
+                parar.set()
+                driver.quit()
+                continue
 
-def executar_campanha(cid, url_anuncio, titulo, quantidade, tom):
-    try:
-        print(f"CAMPANHA_START cid={cid} qtd={quantidade}", flush=True)
-        atualizar_campanha(cid, "ativa")
-        for i in range(1, quantidade + 1):
-            processar_conta(cid, url_anuncio, titulo, tom, i, quantidade)
-        atualizar_campanha(cid, "concluida")
-        print(f"CAMPANHA_FIM cid={cid}", flush=True)
-    except Exception as e:
-        import traceback
-        print(f"CAMPANHA_EXCEPTION: {e}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        atualizar_campanha(cid, "erro")
+            # Pergunta
+            registrar_conta(cid, num_conta, mail["usuario"], mail["email"], "", "perguntando")
+            driver.get(url_anuncio)
+            time.sleep(5)
+            if is_cf(driver.title):
+                aguardar_cf(driver)
 
+            pergunta = gerar_pergunta(titulo, tom)
 
-# ── Rotas Flask ───────────────────────────────────────────────────────────────
+            try:
+                textarea = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "textarea")))
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'})", textarea)
+                time.sleep(1)
+                textarea.click()
+                for char in pergunta:
+                    textarea.send_keys(char)
+                    time.sleep(0.05)
+                time.sleep(3)
+
+                btn = wait.until(EC.element_to_be_clickable(
+                    (By.XPATH, "//a[contains(@class,'btn-primary') and contains(text(),'Perguntar')]")
+                ))
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'})", btn)
+                time.sleep(0.5)
+                driver.execute_script("arguments[0].click()", btn)
+                time.sleep(5)
+
+                registrar_conta(cid, num_conta, mail["usuario"], mail["email"], pergunta, "concluido")
+                parar.set()
+                driver.quit()
+                return
+
+            except Exception as e:
+                registrar_conta(cid, num_conta, mail["usuario"], mail["email"], "", "erro", str(e))
+
+            parar.set()
+            driver.quit()
+            return
+
+        except Exception as e:
+            print(f"  Erro geral tentativa {tentativa}: {e}")
+            try:
+                parar.set()
+                driver.quit()
+            except:
+                pass
+
+    registrar_conta(cid, num_conta, mail["usuario"], mail["email"], "", "erro", "Todas tentativas falharam")
+
+def rodar_campanha(cid, url_anuncio, titulo, quantidade, tom, delay_config):
+    delays = {"rapido": (3,5), "normal": (5,10), "lento": (10,20)}
+    d_min, d_max = delays.get(delay_config, (5,10))
+
+    for i in range(1, quantidade + 1):
+        executar_conta(cid, url_anuncio, titulo, i, tom)
+        if i < quantidade:
+            time.sleep(random.randint(d_min, d_max))
+
+    total = len(campanhas_status.get(cid, {}).get("contas", []))
+    concluidos = sum(1 for c in campanhas_status.get(cid, {}).get("contas", []) if c["status"] == "concluido")
+    atualizar_campanha(cid, "concluida" if concluidos > 0 else "erro")
+
+# ── rotas Flask ───────────────────────────────────────────────────────────────
 
 @app.route("/")
-def home():
+def index():
     return send_from_directory(".", "index.html")
 
-@app.route("/iniciar", methods=["POST", "OPTIONS"])
+@app.route("/iniciar", methods=["POST"])
 def iniciar():
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-    data = request.json or {}
-    if data.get("api_key") != BASE44_API_KEY:
+    data = request.json
+    if data.get("api_key") != API_KEY:
         return jsonify({"erro": "API key inválida"}), 401
-    cid         = data.get("campanha_id")
-    url_anuncio = data.get("url_anuncio")
-    titulo      = data.get("titulo", "Produto")
-    quantidade  = int(data.get("quantidade", 5))
-    tom         = data.get("tom", "variado")
-    if not cid or not url_anuncio:
-        return jsonify({"erro": "campanha_id e url_anuncio são obrigatórios"}), 400
-    campanhas_status[cid] = {"contas": [], "campanha_status": "ativa"}
-    print(f"INICIAR: cid={cid} qtd={quantidade}", flush=True)
-    t = threading.Thread(target=executar_campanha, args=(cid, url_anuncio, titulo, quantidade, tom))
-    t.daemon = True
-    t.start()
-    return jsonify({"status": "iniciado", "campanha_id": cid})
 
-@app.route("/status", methods=["GET"])
+    cid = data.get("campanha_id", f"camp_{int(time.time())}")
+    url = data.get("url_anuncio", "")
+    titulo = data.get("titulo", "Produto")
+    quantidade = int(data.get("quantidade", 1))
+    tom = data.get("tom", "variado")
+    delay = data.get("delay", "normal")
+
+    if not url:
+        return jsonify({"erro": "URL do anúncio obrigatória"}), 400
+
+    campanhas_status[cid] = {"contas": [], "campanha_status": "ativa"}
+
+    t = threading.Thread(target=rodar_campanha, args=(cid, url, titulo, quantidade, tom, delay), daemon=True)
+    t.start()
+
+    return jsonify({"ok": True, "campanha_id": cid, "quantidade": quantidade})
+
+@app.route("/status")
 def status():
     cid = request.args.get("campanha_id")
     if cid and cid in campanhas_status:
         return jsonify(campanhas_status[cid])
-    if campanhas_status:
-        return jsonify(list(campanhas_status.values())[-1])
-    return jsonify({"contas": [], "campanha_status": "aguardando"})
+    return jsonify({"contas": [], "campanha_status": "nao_encontrada"})
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "bot": "ggmax-bot"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print(f"GGMAX BOT rodando na porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
