@@ -13,8 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libpango-1.0-0 libcairo2 \
     libx11-6 libx11-xcb1 libxcb1 libxext6 \
-    libasound2t64 libopus0 libvpx7 \
-    fonts-liberation ca-certificates \
+    libasound2 fonts-liberation ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Instala Google Chrome
@@ -33,5 +32,4 @@ COPY index.html /app/index.html
 
 EXPOSE 8080
 
-# Inicia Xvfb (display virtual) e o servidor
 CMD Xvfb :99 -screen 0 1920x1080x24 & python -u /app/server.py
