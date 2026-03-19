@@ -368,7 +368,8 @@ def rodar_campanha(cid, url_anuncio, titulo, quantidade, tom, delay_config):
 
 @app.route("/")
 def index():
-    return send_from_directory(".", "index.html")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(base_dir, "index.html")
 
 @app.route("/iniciar", methods=["POST"])
 def iniciar():
